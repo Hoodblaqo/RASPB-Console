@@ -485,39 +485,32 @@ def console_page():
     previous=session.pop("osint_output",[])
     return page("""
     <style>
-    .osgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:9px;margin:16px 0}
-    .tool{background:#101e30;border:1px solid #29415f;border-radius:11px;padding:12px;color:#cfe5ff;text-align:left;cursor:pointer}
-    .tool.active{border-color:#4cbd91;background:#103027}
+    .osform{display:grid;grid-template-columns:1fr;gap:8px}
+    .osform select,.osform input,.osform button{width:100%;padding:14px;border-radius:10px;font:inherit}
+    .osform select,.osform input{background:#0a111d;color:#f4f7fb;border:1px solid #34445c}
     .result{background:#050b12;border:1px solid #25435b;border-radius:12px;padding:14px;min-height:230px;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace;color:#a9f0cb}
-    .osform{display:flex;gap:8px}.osform input{flex:1;min-width:0}.osform button{width:auto;min-width:90px}
-    @media(max-width:520px){.osform{display:block}.osform button{width:100%}}
     </style>
     <h2>OSINT intelligence workspace</h2>
-    <p class="muted">Live public-source lookups for domains, IPs, websites and email-domain configuration. Passive checks only.</p>
-    <div class="osgrid">
-      <button class="tool active" data-kind="domain" type="button">Domain profile</button>
-      <button class="tool" data-kind="ip" type="button">IP intelligence</button>
-      <button class="tool" data-kind="url" type="button">Website analysis</button>
-      <button class="tool" data-kind="dns" type="button">DNS records</button>
-      <button class="tool" data-kind="email" type="button">Email domain</button>
-    </div>
+    <p class="muted">Choose a tool below, enter a target, then tap Analyze. Works without JavaScript.</p>
     <form id="osform" class="osform" method="post" action="{{ url_for('osint_api') }}">
       <input type="hidden" name="csrf_token" value="{{ token }}">
-      <input type="hidden" name="kind" id="kind" value="domain">
-      <input id="target" name="target" placeholder="example.com" autocomplete="off" required>
+      <label for="kind">Select tool</label>
+      <select name="kind" id="kind" required>
+        <option value="domain">Domain profile</option>
+        <option value="ip">IP intelligence</option>
+        <option value="url">Website analysis</option>
+        <option value="dns">DNS records</option>
+        <option value="email">Email domain</option>
+      </select>
+      <label for="target">Target</label>
+      <input id="target" name="target" placeholder="example.com or name@example.com" autocomplete="off" required>
       <button type="submit" id="run">Analyze</button>
     </form>
     <p class="muted"><small>Results come from public DNS, RDAP and IP metadata providers. No account access, private data, port scanning, crawling or exploit testing.</small></p>
     <h2>Analysis output</h2>
     <div id="result" class="result" aria-live="polite">{% for line in previous %}{{ line }}{% if not loop.last %}&#10;{% endif %}{% else %}RASPB // OSINT WORKSPACE
-Ready. Choose a tool and enter a target.{% endfor %}</div>
+Ready. Select a tool and enter a target.{% endfor %}</div>
     <p><a href="{{ url_for('admin') if current_user().is_admin else url_for('dashboard') }}">Back to account</a></p>
-    <script>
-    const csrf={{ token|tojson }}, form=document.getElementById('osform'), target=document.getElementById('target'), kind=document.getElementById('kind'), result=document.getElementById('result'), run=document.getElementById('run');
-    const hints={domain:'example.com',ip:'8.8.8.8',url:'https://example.com',dns:'example.com',email:'name@example.com'};
-    document.querySelectorAll('.tool').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tool').forEach(x=>x.classList.remove('active'));b.classList.add('active');kind.value=b.dataset.kind;target.placeholder=hints[kind.value];target.value='';target.focus();}));
-    form.addEventListener('submit',async e=>{e.preventDefault();if(!target.value.trim())return;run.disabled=true;run.textContent='Analyzing…';result.textContent='Querying public sources…';try{const r=await fetch(form.action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:JSON.stringify({kind:kind.value,target:target.value})});const d=await r.json();result.textContent=(d.output||[d.error||'Request failed']).join('\n');}catch(err){result.textContent='Connection error: '+err.message;}finally{run.disabled=false;run.textContent='Analyze';}});
-    </script>
     """,token=token,previous=previous)
 
 @app.post("/api/osint")

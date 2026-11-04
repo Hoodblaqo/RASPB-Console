@@ -64,6 +64,11 @@ class FullscreenImage(db.Model):
     mime_type = db.Column(db.String(32), nullable=False)
     updated_at = db.Column(db.DateTime(timezone=True), default=now, onupdate=now, nullable=False)
 
+class TrollRedirect(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+
 def ensure_owner():
     name = os.environ.get("OWNER_USERNAME", "").strip().lower()
     password = os.environ.get("OWNER_PASSWORD", "")
@@ -106,6 +111,20 @@ def owner_required(fn):
             return redirect(url_for("home"))
         return fn(*args, **kwargs)
     return wrapped
+
+@app.before_request
+def deliver_pending_troll_redirect():
+    user = current_user()
+    if not user or user.is_admin or request.method != "GET":
+        return None
+    if request.endpoint in ("screen_page", "screen_image", "logout", "login", "register", "locked", "static"):
+        return None
+    pending = TrollRedirect.query.filter_by(user_id=user.id).first()
+    if pending:
+        db.session.delete(pending)
+        db.session.commit()
+        return redirect(url_for("screen_page"))
+    return None
 
 BASE = """
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -224,6 +243,7 @@ def admin():
     {% if u.is_locked %}<form method="post" action="{{ url_for('unlock_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Unlock account</button></form>
     {% else %}<form method="post" action="{{ url_for('lock_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><textarea name="message" maxlength="500" placeholder="Private message explaining the lock..." required></textarea><button class="danger">Lock and send private message</button></form>{% endif %}
     <form method="post" action="{{ url_for('message_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input name="message" maxlength="500" placeholder="Send a private message (optional)" required><button class="secondary">Send private message</button></form>
+    <form method="post" action="{{ url_for('send_troll', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Redirect this user to the troll screen once</button></form>
     </div>{% else %}<p class="muted">No member accounts yet.</p>{% endfor %}
     <h2>Fullscreen screen</h2><div class="panel"><p class="muted">Upload an image to display publicly at <a href="{{ url_for('screen_page') }}" target="_blank">/screen</a>. Maximum 8 MB. PNG, JPG, WebP or GIF.</p>
     <form method="post" action="{{ url_for('upload_fullscreen_image') }}" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -274,6 +294,23 @@ def message_user(user_id):
         flash("Could not send that message.", "error")
     return redirect(url_for("admin"))
 
+
+@app.post("/admin/troll/<int:user_id>")
+@owner_required
+def send_troll(user_id):
+    target = db.session.get(User, user_id)
+    image = db.session.get(FullscreenImage, 1)
+    if not target or target.is_admin:
+        flash("Choose a regular member account.", "error")
+    elif image is None:
+        flash("Upload the troll image first in Fullscreen screen.", "error")
+    else:
+        pending = TrollRedirect.query.filter_by(user_id=target.id).first()
+        if pending is None:
+            db.session.add(TrollRedirect(user_id=target.id))
+            db.session.commit()
+        flash("One-time troll redirect queued for " + target.username + ". It happens on their next page visit.", "success")
+    return redirect(url_for("admin"))
 
 @app.post("/admin/fullscreen-image")
 @owner_required

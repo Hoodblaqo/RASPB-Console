@@ -1,11 +1,12 @@
 import os
+import io
 import re
 import json
 import urllib.request
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Flask, flash, redirect, render_template_string, request, session, url_for
+from flask import Flask, abort, flash, redirect, render_template_string, request, send_file, session, url_for
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -15,6 +16,7 @@ app = Flask(__name__)
 # Trust Render's single reverse proxy for visitor IP and HTTPS scheme.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or os.urandom(32)
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 db_url = os.environ.get("DATABASE_URL", "sqlite:///raspb.sqlite3")
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
@@ -54,6 +56,13 @@ class LoginEvent(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
     user = db.relationship("User", backref=db.backref("login_events", lazy=True, cascade="all, delete-orphan"))
+
+
+class FullscreenImage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    image_data = db.Column(db.LargeBinary, nullable=False)
+    mime_type = db.Column(db.String(32), nullable=False)
+    updated_at = db.Column(db.DateTime(timezone=True), default=now, onupdate=now, nullable=False)
 
 def ensure_owner():
     name = os.environ.get("OWNER_USERNAME", "").strip().lower()
@@ -216,6 +225,10 @@ def admin():
     {% else %}<form method="post" action="{{ url_for('lock_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><textarea name="message" maxlength="500" placeholder="Private message explaining the lock..." required></textarea><button class="danger">Lock and send private message</button></form>{% endif %}
     <form method="post" action="{{ url_for('message_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input name="message" maxlength="500" placeholder="Send a private message (optional)" required><button class="secondary">Send private message</button></form>
     </div>{% else %}<p class="muted">No member accounts yet.</p>{% endfor %}
+    <h2>Fullscreen screen</h2><div class="panel"><p class="muted">Upload an image to display publicly at <a href="{{ url_for('screen_page') }}" target="_blank">/screen</a>. Maximum 8 MB. PNG, JPG, WebP or GIF.</p>
+    <form method="post" action="{{ url_for('upload_fullscreen_image') }}" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="file" name="image" accept="image/png,image/jpeg,image/webp,image/gif" required><button>Upload / replace screen image</button></form>
+    <p><a href="{{ url_for('screen_page') }}" target="_blank">Open public fullscreen screen</a></p></div>
     <h2>Recent login history</h2>{% for u in users %}{% for e in u.login_events[-5:] %}<p><small>{{ u.username }} · {{ e.created_at }}</small></p>{% endfor %}{% endfor %}
     <p><a href="{{ url_for('logout') }}">Log out</a></p>
     """, users=users)
@@ -260,6 +273,61 @@ def message_user(user_id):
     else:
         flash("Could not send that message.", "error")
     return redirect(url_for("admin"))
+
+
+@app.post("/admin/fullscreen-image")
+@owner_required
+def upload_fullscreen_image():
+    uploaded = request.files.get("image")
+    if not uploaded or not uploaded.filename:
+        flash("Choose an image first.", "error")
+        return redirect(url_for("admin"))
+    data = uploaded.read(8 * 1024 * 1024 + 1)
+    if not data:
+        flash("The selected file is empty.", "error")
+        return redirect(url_for("admin"))
+    if len(data) > 8 * 1024 * 1024:
+        flash("Image must be 8 MB or smaller.", "error")
+        return redirect(url_for("admin"))
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        mime = "image/png"
+    elif data.startswith(b"\xff\xd8\xff"):
+        mime = "image/jpeg"
+    elif data.startswith((b"GIF87a", b"GIF89a")):
+        mime = "image/gif"
+    elif len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        mime = "image/webp"
+    else:
+        flash("Unsupported or invalid image. Use PNG, JPG, WebP or GIF.", "error")
+        return redirect(url_for("admin"))
+    image = db.session.get(FullscreenImage, 1)
+    if image is None:
+        image = FullscreenImage(id=1, image_data=data, mime_type=mime)
+        db.session.add(image)
+    else:
+        image.image_data = data
+        image.mime_type = mime
+        image.updated_at = now()
+    db.session.commit()
+    flash("Fullscreen image uploaded. Open /screen to view it.", "success")
+    return redirect(url_for("admin"))
+
+@app.route("/screen")
+def screen_page():
+    image = db.session.get(FullscreenImage, 1)
+    if image is None:
+        return '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>RASPB Screen</title></head><body style="margin:0;background:#05070b;color:#aab6c8;display:grid;place-items:center;height:100vh;font:16px system-ui">No screen image uploaded yet.</body></html>'
+    return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><title>RASPB Screen</title><style>*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#000}img{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;display:block}</style></head><body><img src="/screen/image" alt=""></body></html>'
+
+@app.route("/screen/image")
+def screen_image():
+    image = db.session.get(FullscreenImage, 1)
+    if image is None:
+        abort(404)
+    response = send_file(io.BytesIO(image.image_data), mimetype=image.mime_type, download_name="raspb-screen", max_age=0)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 @app.route("/logout")
 def logout():

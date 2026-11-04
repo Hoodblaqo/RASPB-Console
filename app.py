@@ -1,5 +1,7 @@
 import os
 import re
+import json
+import urllib.request
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -332,8 +334,8 @@ def console_api():
             "about                Show console information",
             "scan now             Show app/session status (no network scan)",
             "scan <private IP>    Validate a private IP only; no probing",
-            "myip                 Show address observed by the server",
-            "lookup <IP>          Classify an IP address locally",
+            "myip                 Show your public IP and passive IP details",
+            "lookup <IP>          Passive public-IP details; local classification for private IPs",
             "phone                Show browser/device user-agent",
             "admin                Show owner status",
             "users                Owner only: list member accounts",
@@ -352,15 +354,26 @@ def console_api():
             output = [f"Address format valid: {addr}", "Private IP format." if addr.is_private else "Not a private IP.", "No host discovery or port probing was performed."]
         except ValueError:
             output = ["Invalid IP address."]
-    elif action == "myip":
-        output = [f"Client IP: {request.remote_addr or 'Unavailable'}", "This is the address observed by the web server."]
-    elif action == "lookup" and len(parts) == 2:
+    elif action in ("myip", "lookup") and (action == "myip" or len(parts) == 2):
         try:
-            addr = ipaddress.ip_address(parts[1])
+            addr = ipaddress.ip_address(request.remote_addr) if action == "myip" else ipaddress.ip_address(parts[1])
             scope = "private" if addr.is_private else ("loopback" if addr.is_loopback else ("reserved" if addr.is_reserved else "public"))
-            output = [f"Address: {addr}", f"Version: IPv{addr.version}", f"Classification: {scope}", "No external lookup was performed."]
+            output = [f"Address: {addr}", f"Version: IPv{addr.version}", f"Classification: {scope}"]
+            if addr.is_global:
+                try:
+                    req = urllib.request.Request(f"https://ipinfo.io/{addr}/json", headers={"User-Agent": "RAMN-console"})
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        details = json.load(response)
+                    for key, label in (("hostname", "Host"), ("org", "Owner/ASN"), ("city", "City"), ("region", "Region"), ("country", "Country"), ("loc", "Coordinates"), ("timezone", "Timezone")):
+                        if details.get(key):
+                            output.append(f"{label}: {details[key]}")
+                    output.append("Source: passive IP metadata lookup (ipinfo.io); no host or port probing.")
+                except Exception:
+                    output.append("External IP metadata lookup unavailable; address classification is local only.")
+            else:
+                output.append("Private/reserved address; external metadata lookup skipped.")
         except ValueError:
-            output = ["Invalid IP address."]
+            output = ["Invalid or unavailable IP address."]
     elif action == "phone":
         output = ["Browser/device user-agent:", request.headers.get("User-Agent", "Unavailable")[:220]]
     elif action == "admin":

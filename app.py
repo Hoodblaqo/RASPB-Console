@@ -5,7 +5,7 @@ from functools import wraps
 
 from flask import Flask, flash, redirect, render_template_string, request, session, url_for
 from flask_sqlalchemy import SQLAlchemy
-from flask_wtf.csrf import CSRFProtect
+from flask_wtf.csrf import CSRFProtect, generate_csrf
 from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
@@ -271,7 +271,7 @@ if __name__ == "__main__":
 @app.route("/console")
 @login_required
 def console_page():
-    token = csrf._get_csrf_token()
+    token = generate_csrf()
     return page("""
     <style>
     .term{background:#030907;border:1px solid #176b43;border-radius:12px;padding:14px;color:#70f5a5;font-family:ui-monospace,monospace;min-height:280px;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -289,7 +289,7 @@ Type help to see available commands.</div>
     const out = document.getElementById('out');
     const form = document.getElementById('cmdform');
     const input = document.getElementById('cmd');
-    function line(s){out.textContent += "\\n" + s;out.scrollTop=out.scrollHeight;}
+    function line(s){out.textContent += "\n" + s;out.scrollTop=out.scrollHeight;}
     form.addEventListener('submit',async e=>{
       e.preventDefault(); const command=input.value.trim(); if(!command)return;
       line("ramn@raspb:~$ "+command); input.value="";

@@ -1,0 +1,1 @@
+Flask>=3.0,<4\nFlask-SQLAlchemy>=3.1,<4\nFlask-WTF>=1.2,<2\ngunicorn>=22,<24\npsycopg[binary]>=3.2,<4\n

@@ -113,7 +113,7 @@ small{color:#9ba9bd}.tag{font-size:12px;color:#9fc9ff}hr{border:0;border-top:1px
 """
 
 def page(content, **context):
-    return render_template_string(BASE, content=render_template_string(content, **context))
+    return render_template_string(BASE, content=render_template_string(content, **context), current_user=current_user)
 
 @app.route("/")
 def home():

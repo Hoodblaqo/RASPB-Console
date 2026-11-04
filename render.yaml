@@ -1,0 +1,26 @@
+databases:
+  - name: raspb-db
+    databaseName: raspb
+    user: raspb_user
+    plan: free
+
+services:
+  - type: web
+    name: raspb-console
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: raspb-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: OWNER_USERNAME
+        sync: false
+      - key: OWNER_PASSWORD
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"

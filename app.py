@@ -334,24 +334,28 @@ def _rdap(url):
 
 def _domain_report(raw):
     domain = _valid_domain(raw)
-    ips = _public_host(domain)
     result = ["DOMAIN INTELLIGENCE — " + domain, "", "DNS / RESOLUTION"]
-    result += ["A/AAAA address: " + ip for ip in ips]
-    for kind in ("MX","NS","TXT","CAA"):
+    for kind in ("A", "AAAA"):
         try:
-            vals = _doh(domain,kind)
+            vals = _doh(domain, kind)
+            result.append(kind + ": " + (" | ".join(vals[:12]) if vals else "No records returned"))
+        except Exception:
+            result.append(kind + ": lookup unavailable")
+    for kind in ("MX", "NS", "TXT", "CAA"):
+        try:
+            vals = _doh(domain, kind)
             result.append(kind + ": " + (" | ".join(vals[:12]) if vals else "No records returned"))
         except Exception:
             result.append(kind + ": lookup unavailable")
     try:
         rd = _rdap("https://rdap.org/domain/" + urllib.parse.quote(domain))
         result += ["", "REGISTRATION (RDAP)", "Handle: " + str(rd.get("handle") or "Not supplied"),
-                   "Status: " + ", ".join(rd.get("status",[])[:8])]
-        events = [e.get("eventDate","") for e in rd.get("events",[]) if e.get("eventAction") in ("registration","expiration","last changed")]
+                   "Status: " + ", ".join(rd.get("status", [])[:8])]
+        events = [e.get("eventDate", "") for e in rd.get("events", []) if e.get("eventAction") in ("registration", "expiration", "last changed")]
         if events: result.append("Registration events: " + " | ".join(events[:5]))
-        names = [n.get("ldhName","") for n in rd.get("nameservers",[]) if n.get("ldhName")]
+        names = [n.get("ldhName", "") for n in rd.get("nameservers", []) if n.get("ldhName")]
         if names: result.append("Nameservers: " + ", ".join(names[:8]))
-        result.append("Registrar: " + next((v.get("fn","") for ent in rd.get("entities",[]) if "registrar" in ent.get("roles",[]) for v in ent.get("vcardArray",[[],[]])[1] if len(v)>3 and v[0]=="fn"), "Not supplied"))
+        result.append("Registrar: " + next((v.get("fn", "") for ent in rd.get("entities", []) if "registrar" in ent.get("roles", []) for v in ent.get("vcardArray", [[], []])[1] if len(v) > 3 and v[0] == "fn"), "Not supplied"))
     except Exception as exc:
         result += ["", "REGISTRATION (RDAP)", str(exc)]
     result += ["", "Source: Cloudflare DNS-over-HTTPS and public RDAP. DNS data may be cached."]
@@ -421,33 +425,57 @@ def _url_report(raw):
     return out
 
 def _dns_report(raw):
-    domain=_valid_domain(raw)
-    _public_host(domain)
-    out=["DNS RECORDS — "+domain]
-    for kind in ("A","AAAA","MX","NS","TXT","CAA","SOA"):
+    domain = _valid_domain(raw)
+    out = ["DNS RECORDS — " + domain]
+    for kind in ("A", "AAAA", "MX", "NS", "TXT", "CAA", "SOA"):
         try:
-            vals=_doh(domain,kind)
-            out.append(kind+": "+(" | ".join(vals[:15]) if vals else "No records"))
-        except Exception: out.append(kind+": provider unavailable")
+            vals = _doh(domain, kind)
+            out.append(kind + ": " + (" | ".join(vals[:15]) if vals else "No records"))
+        except Exception:
+            out.append(kind + ": provider unavailable")
     out.append("Source: Cloudflare DNS-over-HTTPS.")
     return out
 
+
 def _email_report(raw):
-    value=raw.strip()
-    if not re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+",value) or len(value)>254:
-        raise ValueError("Enter an email address in name@example.com format.")
-    domain=_valid_domain(value.rsplit("@",1)[1])
-    out=["EMAIL DOMAIN CHECK — "+domain,"Address syntax: valid","Mailbox existence: not tested (privacy and provider restrictions)."]
+    value = raw.strip()
+    if len(value) > 254:
+        raise ValueError("Email address is too long.")
+    if "@" in value:
+        if value.count("@") != 1:
+            raise ValueError("Enter an email address in name@example.com format, or enter a domain.")
+        local, domain_raw = value.rsplit("@", 1)
+        if (not local or len(local) > 64 or local.startswith(".") or local.endswith(".") or ".." in local
+                or not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+", local)):
+            raise ValueError("The email address format is invalid.")
+        domain = _valid_domain(domain_raw)
+        out = ["EMAIL DOMAIN INTELLIGENCE — " + domain, "Address syntax: valid format", "Mailbox existence: not tested (cannot be reliably confirmed through public DNS)."]
+    else:
+        domain = _valid_domain(value)
+        out = ["EMAIL DOMAIN INTELLIGENCE — " + domain, "Domain input: valid"]
     try:
-        mx=_doh(domain,"MX")
-        out.append("MX records: "+(" | ".join(mx[:12]) if mx else "No MX records found"))
-        out.append("Mail domain appears configured: "+("yes" if mx else "no"))
-    except Exception: out.append("MX lookup unavailable.")
+        mx = _doh(domain, "MX")
+        out.append("MX records: " + (" | ".join(mx[:12]) if mx else "No MX records found"))
+        out.append("Mail routing: " + ("MX records published" if mx else "No MX records observed; check implicit-MX/A records before concluding mail is unavailable"))
+    except Exception:
+        out.append("MX lookup: provider unavailable")
     try:
-        spf=[x for x in _doh(domain,"TXT") if "v=spf1" in x.lower()]
-        out.append("SPF: "+(" | ".join(spf[:3]) if spf else "No SPF record observed"))
-    except Exception: out.append("SPF lookup unavailable.")
-    out.append("No email was sent; no mailbox login or verification was attempted.")
+        txt = _doh(domain, "TXT")
+        spf = [x for x in txt if "v=spf1" in x.lower()]
+        out.append("SPF: " + (" | ".join(spf[:3]) if spf else "No SPF record observed"))
+    except Exception:
+        out.append("SPF lookup: provider unavailable")
+    for name, label in (("_dmarc." + domain, "DMARC"), ("_mta-sts." + domain, "MTA-STS"), ("_smtp._tls." + domain, "TLS reporting (TLS-RPT)")):
+        try:
+            vals = _doh(name, "TXT")
+            if label == "DMARC": vals = [x for x in vals if "v=dmarc1" in x.lower()]
+            elif label == "MTA-STS": vals = [x for x in vals if "v=stsv1" in x.lower()]
+            else: vals = [x for x in vals if "v=tlsrptv1" in x.lower()]
+            out.append(label + ": " + (" | ".join(vals[:3]) if vals else "No matching record observed"))
+        except Exception:
+            out.append(label + ": lookup unavailable")
+    out += ["DKIM: selector-specific; not checked because selectors are not reliably discoverable.",
+            "No email was sent; no mailbox login or verification was attempted."]
     return out
 
 @app.route("/console")
@@ -488,7 +516,7 @@ Ready. Choose a tool and enter a target.{% endfor %}</div>
     const csrf={{ token|tojson }}, form=document.getElementById('osform'), target=document.getElementById('target'), kind=document.getElementById('kind'), result=document.getElementById('result'), run=document.getElementById('run');
     const hints={domain:'example.com',ip:'8.8.8.8',url:'https://example.com',dns:'example.com',email:'name@example.com'};
     document.querySelectorAll('.tool').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tool').forEach(x=>x.classList.remove('active'));b.classList.add('active');kind.value=b.dataset.kind;target.placeholder=hints[kind.value];target.value='';target.focus();}));
-    form.addEventListener('submit',async e=>{e.preventDefault();if(!target.value.trim())return;run.disabled=true;run.textContent='Analyzing…';result.textContent='Querying public sources…';try{const r=await fetch(form.action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:JSON.stringify({kind:kind.value,target:target.value})});const d=await r.json();result.textContent=(d.output||[d.error||'Request failed']).join('\\n');}catch(err){result.textContent='Connection error: '+err.message;}finally{run.disabled=false;run.textContent='Analyze';}});
+    form.addEventListener('submit',async e=>{e.preventDefault();if(!target.value.trim())return;run.disabled=true;run.textContent='Analyzing…';result.textContent='Querying public sources…';try{const r=await fetch(form.action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:JSON.stringify({kind:kind.value,target:target.value})});const d=await r.json();result.textContent=(d.output||[d.error||'Request failed']).join('\n');}catch(err){result.textContent='Connection error: '+err.message;}finally{run.disabled=false;run.textContent='Analyze';}});
     </script>
     """,token=token,previous=previous)
 

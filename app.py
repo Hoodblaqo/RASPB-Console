@@ -193,7 +193,7 @@ def dashboard():
     user = current_user()
     messages = PrivateMessage.query.filter_by(recipient_id=user.id).order_by(PrivateMessage.created_at.desc()).limit(30).all()
     return page("""
-    <h2>Your account</h2><div class="panel"><b>{{ user.username }}</b><p class="muted">Member since {{ user.created_at.strftime('%Y-%m-%d') }}</p></div>
+    <h2>Your account</h2><p><a href="{{ url_for('console_page') }}">Open RAMN terminal</a></p><div class="panel"><b>{{ user.username }}</b><p class="muted">Member since {{ user.created_at.strftime('%Y-%m-%d') }}</p></div>
     <h2>Private inbox</h2>{% if messages %}{% for m in messages %}<div class="panel"><b>From {{ m.sender }}</b><p>{{ m.body }}</p><small>{{ m.created_at }}</small></div>{% endfor %}{% else %}<p class="muted">No private messages yet.</p>{% endif %}
     <p><a href="{{ url_for('logout') }}">Log out</a></p>
     """, user=user, messages=messages)
@@ -203,7 +203,7 @@ def dashboard():
 def admin():
     users = User.query.filter_by(is_admin=False).order_by(User.username.asc()).all()
     return page("""
-    <h2>Owner panel</h2><p class="muted">Only the configured owner account can use these controls.</p>
+    <h2>Owner panel</h2><p><a href="{{ url_for('console_page') }}">Open RAMN terminal</a></p><p class="muted">Only the configured owner account can use these controls.</p>
     {% for u in users %}<div class="panel"><b>{{ u.username }}</b> · {% if u.is_locked %}<span class="error">LOCKED</span>{% else %}<span class="success">ACTIVE</span>{% endif %}
     <p><small>Joined: {{ u.created_at }} · Last login: {{ u.last_login or "Never" }}</small></p>
     {% if u.is_locked %}<form method="post" action="{{ url_for('unlock_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Unlock account</button></form>
@@ -266,3 +266,128 @@ def forbidden(_error):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")), debug=False)
+
+
+@app.route("/console")
+@login_required
+def console_page():
+    token = csrf._get_csrf_token()
+    return page("""
+    <style>
+    .term{background:#030907;border:1px solid #176b43;border-radius:12px;padding:14px;color:#70f5a5;font-family:ui-monospace,monospace;min-height:280px;white-space:pre-wrap;overflow-wrap:anywhere}
+    .termline{display:flex;gap:8px}.termline input{font-family:monospace}.termline button{width:auto;min-width:82px}
+    </style>
+    <h2>RAMN terminal</h2><p class="muted">Session tools and owner account controls. Active network probing is disabled.</p>
+    <div id="out" class="term">RAMN // RASPB CONSOLE
+Secure session established.
+Type help to see available commands.</div>
+    <form id="cmdform" class="termline"><input id="cmd" autocomplete="off" placeholder="Enter command..." required><button>Run</button></form>
+    <p class="muted"><small>Owner commands require the owner account.</small></p>
+    <a href="{{ url_for('admin') if current_user().is_admin else url_for('dashboard') }}">Back to account</a>
+    <script>
+    const csrfToken = {{ token|tojson }};
+    const out = document.getElementById('out');
+    const form = document.getElementById('cmdform');
+    const input = document.getElementById('cmd');
+    function line(s){out.textContent += "\\n" + s;out.scrollTop=out.scrollHeight;}
+    form.addEventListener('submit',async e=>{
+      e.preventDefault(); const command=input.value.trim(); if(!command)return;
+      line("ramn@raspb:~$ "+command); input.value="";
+      try{
+        const r=await fetch("/api/console",{method:"POST",headers:{"Content-Type":"application/json","X-CSRFToken":csrfToken},body:JSON.stringify({command})});
+        const data=await r.json();
+        (data.output||["Request failed."]).forEach(s=>{if(s==="__CLEAR__")out.textContent="";else line(s);});
+      }catch(_){line("Connection error. Try again.");}
+    });
+    </script>
+    """, token=token)
+
+@app.post("/api/console")
+@login_required
+def console_api():
+    import ipaddress
+    data = request.get_json(silent=True) or {}
+    command = str(data.get("command", ""))[:300].strip()
+    if not command:
+        return {"output": ["Enter a command."]}, 400
+    parts = command.split()
+    action = parts[0].lower()
+    user = current_user()
+    if action in ("help", "?"):
+        output = [
+            "help                 Show commands",
+            "clear                Clear this terminal",
+            "about                Show console information",
+            "scan now             Show app/session status (no network scan)",
+            "scan <private IP>    Validate a private IP only; no probing",
+            "myip                 Client address is intentionally hidden",
+            "lookup <IP>          Classify an IP address locally",
+            "phone                Show browser/device user-agent",
+            "admin                Show owner status",
+            "users                Owner only: list member accounts",
+            "lock <user> | <why>  Owner only: lock and privately notify a user",
+            "unlock <user>        Owner only: unlock a user"
+        ]
+    elif action == "clear":
+        output = ["__CLEAR__"]
+    elif action == "about":
+        output = ["RAMN / RASPB web terminal", "Authenticated session tools", "Active network reconnaissance is disabled."]
+    elif action == "scan" and len(parts) == 2 and parts[1].lower() == "now":
+        output = ["Application: online", "Session: authenticated", "Database: application database configured", "Network discovery/port scanning: disabled"]
+    elif action == "scan" and len(parts) == 2:
+        try:
+            addr = ipaddress.ip_address(parts[1])
+            output = [f"Address format valid: {addr}", "Private IP format." if addr.is_private else "Not a private IP.", "No host discovery or port probing was performed."]
+        except ValueError:
+            output = ["Invalid IP address."]
+    elif action == "myip":
+        output = ["Client IP details are not exposed in this console."]
+    elif action == "lookup" and len(parts) == 2:
+        try:
+            addr = ipaddress.ip_address(parts[1])
+            scope = "private" if addr.is_private else ("loopback" if addr.is_loopback else ("reserved" if addr.is_reserved else "public"))
+            output = [f"Address: {addr}", f"Version: IPv{addr.version}", f"Classification: {scope}", "No external lookup was performed."]
+        except ValueError:
+            output = ["Invalid IP address."]
+    elif action == "phone":
+        output = ["Browser/device user-agent:", request.headers.get("User-Agent", "Unavailable")[:220]]
+    elif action == "admin":
+        output = [f"Signed in as: {user.username}", f"Owner privileges: {'yes' if user.is_admin else 'no'}"]
+    elif action == "users":
+        if not user.is_admin:
+            output = ["Permission denied: owner only."]
+        else:
+            members = User.query.filter_by(is_admin=False).order_by(User.username.asc()).all()
+            output = [f"{u.username} — {'LOCKED' if u.is_locked else 'ACTIVE'}" for u in members] or ["No member accounts."]
+    elif action == "lock" and "|" in command:
+        if not user.is_admin:
+            output = ["Permission denied: owner only."]
+        else:
+            left, reason = command[4:].split("|", 1)
+            target_name, reason = left.strip().lower(), reason.strip()
+            target = User.query.filter_by(username=target_name).first()
+            if not target or target.is_admin:
+                output = ["User not found or protected owner account."]
+            elif not reason:
+                output = ["Add a private reason after the | character."]
+            else:
+                target.is_locked = True
+                target.lock_message = reason[:500]
+                db.session.add(PrivateMessage(recipient_id=target.id, sender=user.username, body="Account locked: " + reason[:500]))
+                db.session.commit()
+                output = [f"Locked {target.username}. Private notice sent."]
+    elif action == "unlock" and len(parts) == 2:
+        if not user.is_admin:
+            output = ["Permission denied: owner only."]
+        else:
+            target = User.query.filter_by(username=parts[1].lower()).first()
+            if not target or target.is_admin:
+                output = ["User not found or protected owner account."]
+            else:
+                target.is_locked = False
+                target.lock_message = None
+                db.session.commit()
+                output = [f"Unlocked {target.username}."]
+    else:
+        output = ["Unknown command. Type help."]
+    return {"output": output}

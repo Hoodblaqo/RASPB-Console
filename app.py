@@ -12,7 +12,9 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or os.urandom(32)
 db_url = os.environ.get("DATABASE_URL", "sqlite:///raspb.sqlite3")
 if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
+    db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
+elif db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -55,8 +57,7 @@ def ensure_owner():
         return
     user = User.query.filter_by(username=name).first()
     if user is None:
-        user = User(username=name, password_hash=generate_password_hash(password), is_admin=True)
-        db.session.add(user)
+        db.session.add(User(username=name, password_hash=generate_password_hash(password), is_admin=True))
         db.session.commit()
     elif not user.is_admin:
         user.is_admin = True
@@ -101,7 +102,7 @@ main{width:min(760px,92vw);margin:38px auto;padding:26px;background:#101725;bord
 h1{margin:0 0 6px;letter-spacing:.08em}h2{margin-top:28px;color:#a8c7ff}.muted{color:#9ba9bd}
 input,textarea,button{width:100%;padding:12px;margin:7px 0;border-radius:10px;border:1px solid #34445c;background:#0a111d;color:#f4f7fb;font:inherit}
 textarea{min-height:90px;resize:vertical}button{background:#1c4b83;border:0;font-weight:700;cursor:pointer}button.danger{background:#8c2939}button.secondary{background:#34445c}
-a{color:#8fc5ff}.row{display:flex;gap:10px;align-items:center}.row form{flex:1}.panel{padding:15px;margin:12px 0;background:#0b1220;border:1px solid #26364c;border-radius:12px}
+a{color:#8fc5ff}.panel{padding:15px;margin:12px 0;background:#0b1220;border:1px solid #26364c;border-radius:12px}
 .notice{padding:12px;border-radius:10px;background:#312b16;margin:10px 0}.error{color:#ff9aab}.success{color:#9ce7bb}
 small{color:#9ba9bd}.tag{font-size:12px;color:#9fc9ff}hr{border:0;border-top:1px solid #26364c;margin:22px 0}
 </style></head><body><main>

@@ -274,148 +274,241 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")), debug=False)
 
 
+
+# Passive OSINT workspace. Only public DNS/RDAP/HTTP/TLS metadata is queried.
+import ipaddress
+import socket
+import ssl
+import urllib.parse
+import urllib.error
+import urllib.request
+from html.parser import HTMLParser
+
+def _valid_domain(value):
+    value = value.strip().lower().rstrip(".")
+    if len(value) > 253 or not re.fullmatch(r"[a-z0-9.-]+", value):
+        raise ValueError("Enter a valid domain name.")
+    if "." not in value or any(not part or len(part) > 63 or part.startswith("-") or part.endswith("-") for part in value.split(".")):
+        raise ValueError("Enter a fully qualified domain such as example.com.")
+    return value
+
+def _public_host(host):
+    try:
+        ip = ipaddress.ip_address(host)
+        if not ip.is_global:
+            raise ValueError("Private, reserved, and local IP addresses are not queried.")
+        return [str(ip)]
+    except ValueError as exc:
+        if "not queried" in str(exc):
+            raise
+    try:
+        rows = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        addresses = sorted({row[4][0] for row in rows})
+    except Exception:
+        raise ValueError("The domain could not be resolved.")
+    if not addresses:
+        raise ValueError("No public address was found.")
+    for item in addresses:
+        if not ipaddress.ip_address(item).is_global:
+            raise ValueError("The domain resolves to a non-public address; request blocked.")
+    return addresses
+
+def _get_json(url, timeout=7):
+    req = urllib.request.Request(url, headers={"User-Agent":"RASPB-OSINT/1.0","Accept":"application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        if res.status != 200:
+            raise ValueError("The information provider returned HTTP " + str(res.status))
+        return json.loads(res.read(900000).decode("utf-8", "replace"))
+
+def _doh(name, kind):
+    q = urllib.parse.urlencode({"name":name,"type":kind})
+    data = _get_json("https://cloudflare-dns.com/dns-query?"+q)
+    return [x.get("data","") for x in data.get("Answer",[]) if x.get("data")]
+
+def _rdap(url):
+    try:
+        data = _get_json(url, timeout=8)
+        return data
+    except Exception as exc:
+        raise ValueError("RDAP lookup unavailable: " + str(exc)[:140])
+
+def _domain_report(raw):
+    domain = _valid_domain(raw)
+    ips = _public_host(domain)
+    result = ["DOMAIN INTELLIGENCE — " + domain, "", "DNS / RESOLUTION"]
+    result += ["A/AAAA address: " + ip for ip in ips]
+    for kind in ("MX","NS","TXT","CAA"):
+        try:
+            vals = _doh(domain,kind)
+            result.append(kind + ": " + (" | ".join(vals[:12]) if vals else "No records returned"))
+        except Exception:
+            result.append(kind + ": lookup unavailable")
+    try:
+        rd = _rdap("https://rdap.org/domain/" + urllib.parse.quote(domain))
+        result += ["", "REGISTRATION (RDAP)", "Handle: " + str(rd.get("handle") or "Not supplied"),
+                   "Status: " + ", ".join(rd.get("status",[])[:8])]
+        events = [e.get("eventDate","") for e in rd.get("events",[]) if e.get("eventAction") in ("registration","expiration","last changed")]
+        if events: result.append("Registration events: " + " | ".join(events[:5]))
+        names = [n.get("ldhName","") for n in rd.get("nameservers",[]) if n.get("ldhName")]
+        if names: result.append("Nameservers: " + ", ".join(names[:8]))
+        result.append("Registrar: " + next((v.get("fn","") for ent in rd.get("entities",[]) if "registrar" in ent.get("roles",[]) for v in ent.get("vcardArray",[[],[]])[1] if len(v)>3 and v[0]=="fn"), "Not supplied"))
+    except Exception as exc:
+        result += ["", "REGISTRATION (RDAP)", str(exc)]
+    result += ["", "Source: Cloudflare DNS-over-HTTPS and public RDAP. DNS data may be cached."]
+    return result
+
+def _ip_report(raw):
+    try: addr=ipaddress.ip_address(raw.strip())
+    except ValueError: raise ValueError("Enter a valid IPv4 or IPv6 address.")
+    out=["IP INTELLIGENCE — "+str(addr),"Version: IPv"+str(addr.version),
+         "Global/public: "+str(addr.is_global),"Private: "+str(addr.is_private),
+         "Reserved: "+str(addr.is_reserved),"Loopback: "+str(addr.is_loopback)]
+    if not addr.is_global:
+        out.append("External geolocation skipped for non-public addresses.")
+        return out
+    try:
+        rd=_rdap("https://rdap.org/ip/"+str(addr))
+        out += ["","IP REGISTRATION (RDAP)","Network name: "+str(rd.get("name") or "Not supplied"),
+                "Handle: "+str(rd.get("handle") or "Not supplied"),
+                "Country: "+str(rd.get("country") or "Not supplied"),
+                "Range: "+str(rd.get("startAddress","?"))+" – "+str(rd.get("endAddress","?"))]
+    except Exception as exc: out += ["RDAP: "+str(exc)]
+    try:
+        info=_get_json("https://ipinfo.io/"+str(addr)+"/json")
+        for key,label in (("hostname","Hostname"),("org","Network / ASN"),("city","City"),("region","Region"),("country","Country"),("loc","Coordinates"),("timezone","Timezone")):
+            if info.get(key): out.append(label+": "+str(info[key]))
+    except Exception: out.append("Geolocation provider unavailable.")
+    out.append("Source: public RDAP and ipinfo.io. Location is approximate, not a street address.")
+    return out
+
+def _url_report(raw):
+    raw=raw.strip()
+    if "://" not in raw: raw="https://"+raw
+    u=urllib.parse.urlsplit(raw)
+    if u.scheme not in ("http","https") or not u.hostname or u.username or u.password:
+        raise ValueError("Use a public http:// or https:// website URL.")
+    if u.port not in (None,80,443): raise ValueError("Only standard web ports 80 and 443 are supported.")
+    host=u.hostname.lower()
+    ips=_public_host(host)
+    port=u.port or (443 if u.scheme=="https" else 80)
+    path=urllib.parse.urlunsplit(("", "", u.path or "/", u.query, ""))
+    req=urllib.request.Request(urllib.parse.urlunsplit((u.scheme,host,path,"","")),headers={"User-Agent":"Mozilla/5.0 (compatible; RASPB-OSINT/1.0)","Range":"bytes=0-120000"},method="GET")
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    opener=urllib.request.build_opener(_NoRedirect,urllib.request.HTTPHandler(),urllib.request.HTTPSHandler())
+    out=["WEBSITE INTELLIGENCE — "+host,"Resolved public IPs: "+", ".join(ips),"Requested URL: "+u.scheme+"://"+host+path]
+    try:
+        with opener.open(req,timeout=8) as res:
+            body=res.read(120000).decode("utf-8","replace")
+            headers=res.headers
+            out += ["HTTP status: "+str(res.status),"Final URL: "+res.geturl(),"Server: "+headers.get("Server","Not disclosed"),
+                    "Content-Type: "+headers.get("Content-Type","Not disclosed")]
+            for h in ("strict-transport-security","content-security-policy","x-content-type-options","x-frame-options","referrer-policy","permissions-policy"):
+                out.append(h+": "+headers.get(h,"Not observed"))
+            title=re.search(r"(?is)<title[^>]*>(.*?)</title>",body)
+            if title: out.append("Page title: "+re.sub(r"\\s+"," ",re.sub(r"<[^>]+>","",title.group(1)))[:180])
+            tech=[]
+            for needle,label in (("wp-content","WordPress"),("Shopify","Shopify"),("Drupal.settings","Drupal"),("next/static","Next.js"),("react","React"),("cloudflare","Cloudflare")):
+                if needle.lower() in body.lower() or needle.lower() in str(headers).lower(): tech.append(label)
+            out.append("Technology hints: "+(", ".join(tech) if tech else "No common signature detected"))
+            out.append("Redirects are not followed automatically.")
+    except urllib.error.HTTPError as exc:
+        out += ["HTTP status: "+str(exc.code),"Response: "+str(exc.reason)[:150]]
+        if exc.headers.get("Location"): out.append("Redirect/location: "+exc.headers.get("Location")[:300])
+    except Exception as exc: out.append("HTTP request failed: "+str(exc)[:180])
+    out.append("Safety: public host only; standard web ports; no crawling or vulnerability exploitation.")
+    return out
+
+def _dns_report(raw):
+    domain=_valid_domain(raw)
+    _public_host(domain)
+    out=["DNS RECORDS — "+domain]
+    for kind in ("A","AAAA","MX","NS","TXT","CAA","SOA"):
+        try:
+            vals=_doh(domain,kind)
+            out.append(kind+": "+(" | ".join(vals[:15]) if vals else "No records"))
+        except Exception: out.append(kind+": provider unavailable")
+    out.append("Source: Cloudflare DNS-over-HTTPS.")
+    return out
+
+def _email_report(raw):
+    value=raw.strip()
+    if not re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+",value) or len(value)>254:
+        raise ValueError("Enter an email address in name@example.com format.")
+    domain=_valid_domain(value.rsplit("@",1)[1])
+    out=["EMAIL DOMAIN CHECK — "+domain,"Address syntax: valid","Mailbox existence: not tested (privacy and provider restrictions)."]
+    try:
+        mx=_doh(domain,"MX")
+        out.append("MX records: "+(" | ".join(mx[:12]) if mx else "No MX records found"))
+        out.append("Mail domain appears configured: "+("yes" if mx else "no"))
+    except Exception: out.append("MX lookup unavailable.")
+    try:
+        spf=[x for x in _doh(domain,"TXT") if "v=spf1" in x.lower()]
+        out.append("SPF: "+(" | ".join(spf[:3]) if spf else "No SPF record observed"))
+    except Exception: out.append("SPF lookup unavailable.")
+    out.append("No email was sent; no mailbox login or verification was attempted.")
+    return out
+
 @app.route("/console")
 @login_required
 def console_page():
-    token = generate_csrf()
-    terminal_output = session.pop("terminal_output", [])
+    token=generate_csrf()
+    previous=session.pop("osint_output",[])
     return page("""
     <style>
-    .term{background:#030907;border:1px solid #176b43;border-radius:12px;padding:14px;color:#70f5a5;font-family:ui-monospace,monospace;min-height:280px;white-space:pre-wrap;overflow-wrap:anywhere}
-    .termline{display:flex;gap:8px}.termline input{font-family:monospace}.termline button{width:auto;min-width:82px}
+    .osgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:9px;margin:16px 0}
+    .tool{background:#101e30;border:1px solid #29415f;border-radius:11px;padding:12px;color:#cfe5ff;text-align:left;cursor:pointer}
+    .tool.active{border-color:#4cbd91;background:#103027}
+    .result{background:#050b12;border:1px solid #25435b;border-radius:12px;padding:14px;min-height:230px;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace;color:#a9f0cb}
+    .osform{display:flex;gap:8px}.osform input{flex:1;min-width:0}.osform button{width:auto;min-width:90px}
+    @media(max-width:520px){.osform{display:block}.osform button{width:100%}}
     </style>
-    <h2>RAMN terminal</h2><p class="muted">Session tools and owner account controls. Active network probing is disabled.</p>
-    <div id="out" class="term">RAMN // RASPB CONSOLE
-Secure session established.
-Type help to see available commands.{% for item in terminal_output %}<div>{{ item }}</div>{% endfor %}</div>
-    <form id="cmdform" class="termline" method="post" action="{{ url_for('console_api') }}"><input type="hidden" name="csrf_token" value="{{ token }}"><input id="cmd" name="command" autocomplete="off" placeholder="Enter command..." required><button type="submit">Run</button></form>
-    <p class="muted"><small>Owner commands require the owner account.</small></p>
-    <a href="{{ url_for('admin') if current_user().is_admin else url_for('dashboard') }}">Back to account</a>
+    <h2>OSINT intelligence workspace</h2>
+    <p class="muted">Live public-source lookups for domains, IPs, websites and email-domain configuration. Passive checks only.</p>
+    <div class="osgrid">
+      <button class="tool active" data-kind="domain" type="button">Domain profile</button>
+      <button class="tool" data-kind="ip" type="button">IP intelligence</button>
+      <button class="tool" data-kind="url" type="button">Website analysis</button>
+      <button class="tool" data-kind="dns" type="button">DNS records</button>
+      <button class="tool" data-kind="email" type="button">Email domain</button>
+    </div>
+    <form id="osform" class="osform" method="post" action="{{ url_for('osint_api') }}">
+      <input type="hidden" name="csrf_token" value="{{ token }}">
+      <input type="hidden" name="kind" id="kind" value="domain">
+      <input id="target" name="target" placeholder="example.com" autocomplete="off" required>
+      <button type="submit" id="run">Analyze</button>
+    </form>
+    <p class="muted"><small>Results come from public DNS, RDAP and IP metadata providers. No account access, private data, port scanning, crawling or exploit testing.</small></p>
+    <h2>Analysis output</h2>
+    <div id="result" class="result" aria-live="polite">{% for line in previous %}{{ line }}{% if not loop.last %}&#10;{% endif %}{% else %}RASPB // OSINT WORKSPACE
+Ready. Choose a tool and enter a target.{% endfor %}</div>
+    <p><a href="{{ url_for('admin') if current_user().is_admin else url_for('dashboard') }}">Back to account</a></p>
     <script>
-    const csrfToken = {{ token|tojson }};
-    const out = document.getElementById('out');
-    const form = document.getElementById('cmdform');
-    const input = document.getElementById('cmd');
-    function line(s){out.textContent += "\n" + s;out.scrollTop=out.scrollHeight;}
-    form.addEventListener('submit',async e=>{
-      e.preventDefault(); const command=input.value.trim(); if(!command)return;
-      line("ramn@raspb:~$ "+command); input.value="";
-      try{
-        const r=await fetch("/api/console",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-CSRFToken":csrfToken},body:JSON.stringify({command})});
-        const raw=await r.text(); let data={};
-        try{data=JSON.parse(raw);}catch(_){data={};}
-        if(!r.ok){line("Request failed (HTTP "+r.status+"). "+(data.error||raw.replace(/<[^>]*>/g," ").trim().slice(0,180)||"Reload the terminal and sign in again."));return;}
-        if(!Array.isArray(data.output)){line("Server returned an unexpected response. Reload the terminal.");return;}
-        data.output.forEach(s=>{if(s==="__CLEAR__")out.textContent="";else line(String(s));});
-      }catch(err){line("Connection error: "+(err&&err.message?err.message:"request failed"));}
-    });
+    const csrf={{ token|tojson }}, form=document.getElementById('osform'), target=document.getElementById('target'), kind=document.getElementById('kind'), result=document.getElementById('result'), run=document.getElementById('run');
+    const hints={domain:'example.com',ip:'8.8.8.8',url:'https://example.com',dns:'example.com',email:'name@example.com'};
+    document.querySelectorAll('.tool').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tool').forEach(x=>x.classList.remove('active'));b.classList.add('active');kind.value=b.dataset.kind;target.placeholder=hints[kind.value];target.value='';target.focus();}));
+    form.addEventListener('submit',async e=>{e.preventDefault();if(!target.value.trim())return;run.disabled=true;run.textContent='Analyzing…';result.textContent='Querying public sources…';try{const r=await fetch(form.action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:JSON.stringify({kind:kind.value,target:target.value})});const d=await r.json();result.textContent=(d.output||[d.error||'Request failed']).join('\\n');}catch(err){result.textContent='Connection error: '+err.message;}finally{run.disabled=false;run.textContent='Analyze';}});
     </script>
-    """, token=token, terminal_output=terminal_output)
+    """,token=token,previous=previous)
 
-@app.post("/api/console")
+@app.post("/api/osint")
 @login_required
-def console_api():
-    import ipaddress
-    form_fallback = not request.is_json
-    data = (request.get_json(silent=True) or {}) if request.is_json else request.form
-    command = str(data.get("command", ""))[:300].strip()
-    if not command:
-        if form_fallback:
-            session["terminal_output"] = ["Enter a command."]
-            return redirect(url_for("console_page"))
-        return {"output": ["Enter a command."]}, 400
-    parts = command.split()
-    action = parts[0].lower()
-    user = current_user()
-    if action in ("help", "?"):
-        output = [
-            "help                 Show commands",
-            "clear                Clear this terminal",
-            "about                Show console information",
-            "scan now             Show app/session status (no network scan)",
-            "scan <private IP>    Validate a private IP only; no probing",
-            "myip                 Show your public IP and passive IP details",
-            "lookup <IP>          Passive public-IP details; local classification for private IPs",
-            "phone                Show browser/device user-agent",
-            "admin                Show owner status",
-            "users                Owner only: list member accounts",
-            "lock <user> | <why>  Owner only: lock and privately notify a user",
-            "unlock <user>        Owner only: unlock a user"
-        ]
-    elif action == "clear":
-        output = ["__CLEAR__"]
-    elif action == "about":
-        output = ["RAMN / RASPB web terminal", "Authenticated session tools", "Active network reconnaissance is disabled."]
-    elif action == "scan" and len(parts) == 2 and parts[1].lower() == "now":
-        output = ["Application: online", "Session: authenticated", "Database: application database configured", "Network discovery/port scanning: disabled"]
-    elif action == "scan" and len(parts) == 2:
-        try:
-            addr = ipaddress.ip_address(parts[1])
-            output = [f"Address format valid: {addr}", "Private IP format." if addr.is_private else "Not a private IP.", "No host discovery or port probing was performed."]
-        except ValueError:
-            output = ["Invalid IP address."]
-    elif action in ("myip", "lookup") and (action == "myip" or len(parts) == 2):
-        try:
-            addr = ipaddress.ip_address(request.remote_addr) if action == "myip" else ipaddress.ip_address(parts[1])
-            scope = "private" if addr.is_private else ("loopback" if addr.is_loopback else ("reserved" if addr.is_reserved else "public"))
-            output = [f"Address: {addr}", f"Version: IPv{addr.version}", f"Classification: {scope}"]
-            if addr.is_global:
-                try:
-                    req = urllib.request.Request(f"https://ipinfo.io/{addr}/json", headers={"User-Agent": "RAMN-console"})
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        details = json.load(response)
-                    for key, label in (("hostname", "Host"), ("org", "Owner/ASN"), ("city", "City"), ("region", "Region"), ("country", "Country"), ("loc", "Coordinates"), ("timezone", "Timezone")):
-                        if details.get(key):
-                            output.append(f"{label}: {details[key]}")
-                    output.append("Source: passive IP metadata lookup (ipinfo.io); no host or port probing.")
-                except Exception:
-                    output.append("External IP metadata lookup unavailable; address classification is local only.")
-            else:
-                output.append("Private/reserved address; external metadata lookup skipped.")
-        except ValueError:
-            output = ["Invalid or unavailable IP address."]
-    elif action == "phone":
-        output = ["Browser/device user-agent:", request.headers.get("User-Agent", "Unavailable")[:220]]
-    elif action == "admin":
-        output = [f"Signed in as: {user.username}", f"Owner privileges: {'yes' if user.is_admin else 'no'}"]
-    elif action == "users":
-        if not user.is_admin:
-            output = ["Permission denied: owner only."]
-        else:
-            members = User.query.filter_by(is_admin=False).order_by(User.username.asc()).all()
-            output = [f"{u.username} — {'LOCKED' if u.is_locked else 'ACTIVE'}" for u in members] or ["No member accounts."]
-    elif action == "lock" and "|" in command:
-        if not user.is_admin:
-            output = ["Permission denied: owner only."]
-        else:
-            left, reason = command[4:].split("|", 1)
-            target_name, reason = left.strip().lower(), reason.strip()
-            target = User.query.filter_by(username=target_name).first()
-            if not target or target.is_admin:
-                output = ["User not found or protected owner account."]
-            elif not reason:
-                output = ["Add a private reason after the | character."]
-            else:
-                target.is_locked = True
-                target.lock_message = reason[:500]
-                db.session.add(PrivateMessage(recipient_id=target.id, sender=user.username, body="Account locked: " + reason[:500]))
-                db.session.commit()
-                output = [f"Locked {target.username}. Private notice sent."]
-    elif action == "unlock" and len(parts) == 2:
-        if not user.is_admin:
-            output = ["Permission denied: owner only."]
-        else:
-            target = User.query.filter_by(username=parts[1].lower()).first()
-            if not target or target.is_admin:
-                output = ["User not found or protected owner account."]
-            else:
-                target.is_locked = False
-                target.lock_message = None
-                db.session.commit()
-                output = [f"Unlocked {target.username}."]
+def osint_api():
+    fallback=not request.is_json
+    data=request.get_json(silent=True) or request.form
+    kind=str(data.get("kind","domain")).lower().strip()
+    target=str(data.get("target","")).strip()[:500]
+    if not target:
+        output=["Enter a target to analyze."]
     else:
-        output = ["Unknown command. Type help."]
-    if form_fallback:
-        session["terminal_output"] = output
+        try:
+            funcs={"domain":_domain_report,"ip":_ip_report,"url":_url_report,"dns":_dns_report,"email":_email_report}
+            if kind not in funcs: raise ValueError("Unknown analysis type.")
+            output=funcs[kind](target)
+        except ValueError as exc: output=["Input error: "+str(exc)]
+        except Exception as exc: output=["Lookup failed: "+str(exc)[:180]]
+    if fallback:
+        session["osint_output"]=output
         return redirect(url_for("console_page"))
-    return {"output": output}
+    return {"output":output}

@@ -69,6 +69,12 @@ class TrollRedirect(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), unique=True, nullable=False, index=True)
     created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
 
+class TrollPrank(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), unique=True, nullable=False, index=True)
+    kind = db.Column(db.String(24), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), default=now, nullable=False)
+
 def ensure_owner():
     name = os.environ.get("OWNER_USERNAME", "").strip().lower()
     password = os.environ.get("OWNER_PASSWORD", "")
@@ -124,6 +130,12 @@ def deliver_pending_troll_redirect():
         db.session.delete(pending)
         db.session.commit()
         return redirect(url_for("screen_page"))
+    prank = TrollPrank.query.filter_by(user_id=user.id).first()
+    if prank and request.endpoint != "prank_page":
+        session["pending_prank"] = prank.kind
+        db.session.delete(prank)
+        db.session.commit()
+        return redirect(url_for("prank_page"))
     return None
 
 BASE = """
@@ -244,6 +256,12 @@ def admin():
     {% else %}<form method="post" action="{{ url_for('lock_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><textarea name="message" maxlength="500" placeholder="Private message explaining the lock..." required></textarea><button class="danger">Lock and send private message</button></form>{% endif %}
     <form method="post" action="{{ url_for('message_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input name="message" maxlength="500" placeholder="Send a private message (optional)" required><button class="secondary">Send private message</button></form>
     <form method="post" action="{{ url_for('send_troll', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Redirect this user to the troll screen once</button></form>
+     <div class="tag">ONE-TIME HORROR PRANKS</div>
+     <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='shadow') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Shadow figure</button></form>
+     <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='eyes') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Watching eyes</button></form>
+     <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='terminal') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Haunted terminal</button></form>
+     <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='presence') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Behind you</button></form>
+     <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='nightmare') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Corrupted nightmare</button></form>
     </div>{% else %}<p class="muted">No member accounts yet.</p>{% endfor %}
     <h2>Fullscreen screen</h2><div class="panel"><p class="muted">Upload an image to display publicly at <a href="{{ url_for('screen_page') }}" target="_blank">/screen</a>. Maximum 8 MB. PNG, JPG, WebP or GIF.</p>
     <form method="post" action="{{ url_for('upload_fullscreen_image') }}" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -311,6 +329,33 @@ def send_troll(user_id):
             db.session.commit()
         flash("One-time troll redirect queued for " + target.username + ". It happens on their next page visit.", "success")
     return redirect(url_for("admin"))
+
+@app.post("/admin/prank/<int:user_id>/<kind>")
+@owner_required
+def queue_prank(user_id, kind):
+    allowed = ("shadow", "eyes", "terminal", "presence", "nightmare")
+    target = db.session.get(User, user_id)
+    if not target or target.is_admin or kind not in allowed:
+        flash("Choose a regular member and a valid prank.", "error")
+    else:
+        prank = TrollPrank.query.filter_by(user_id=target.id).first()
+        if prank is None:
+            db.session.add(TrollPrank(user_id=target.id, kind=kind))
+        else:
+            prank.kind = kind
+            prank.created_at = now()
+        db.session.commit()
+        flash("One-time visual scare queued for " + target.username + ". It runs on their next page visit and ends automatically.", "success")
+    return redirect(url_for("admin"))
+
+@app.route("/prank")
+@login_required
+def prank_page():
+    kind = session.pop("pending_prank", None)
+    if kind not in ("shadow", "eyes", "terminal", "presence", "nightmare"):
+        return redirect(url_for("dashboard"))
+    html = base64.b64decode("PCFkb2N0eXBlIGh0bWw+PGh0bWw+PGhlYWQ+PG1ldGEgY2hhcnNldD0idXRmLTgiPjxtZXRhIG5hbWU9InZpZXdwb3J0IiBjb250ZW50PSJ3aWR0aD1kZXZpY2Utd2lkdGgsaW5pdGlhbC1zY2FsZT0xIj48dGl0bGU+UkFTUEIgLy8gU0lHTkFMPC90aXRsZT48c3R5bGU+Kntib3gtc2l6aW5nOmJvcmRlci1ib3h9aHRtbCxib2R5e21hcmdpbjowO3dpZHRoOjEwMCU7aGVpZ2h0OjEwMCU7YmFja2dyb3VuZDojMDMwNDA3O2NvbG9yOiNkZGQ7Zm9udDoxNnB4IHN5c3RlbS11aTtvdmVyZmxvdzpoaWRkZW59Ym9keXtkaXNwbGF5OmdyaWQ7cGxhY2UtaXRlbXM6Y2VudGVyO2JhY2tncm91bmQ6cmFkaWFsLWdyYWRpZW50KGVsbGlwc2UsIzE4MTMxYiwjMDAwIDc1JSl9I3NjZW5le3Bvc2l0aW9uOnJlbGF0aXZlO3dpZHRoOjEwMHZ3O2hlaWdodDoxMDB2aDtkaXNwbGF5OmdyaWQ7cGxhY2UtaXRlbXM6Y2VudGVyO3RleHQtYWxpZ246Y2VudGVyO3BhZGRpbmc6MjRweH1oMXtmb250LXNpemU6Y2xhbXAoMjhweCw3dncsNjRweCk7bGV0dGVyLXNwYWNpbmc6LjEyZW07dGV4dC1zaGFkb3c6MCAwIDIycHggIzljMjMzY31we2NvbG9yOiNhYWF9LmV4aXR7cG9zaXRpb246Zml4ZWQ7Ym90dG9tOjE4cHg7cmlnaHQ6MThweDt6LWluZGV4Ojk7YmFja2dyb3VuZDojMjIyO2NvbG9yOiNlZWU7cGFkZGluZzoxMnB4IDE2cHg7Ym9yZGVyOjFweCBzb2xpZCAjNjY2O2JvcmRlci1yYWRpdXM6OXB4fS50aW1lcntwb3NpdGlvbjpmaXhlZDtib3R0b206MThweDtsZWZ0OjE4cHg7Y29sb3I6Izc3Nztmb250OjEycHggbW9ub3NwYWNlfS5zaGFkb3d7cG9zaXRpb246YWJzb2x1dGU7d2lkdGg6MTIwcHg7aGVpZ2h0OjI3MHB4O2JvdHRvbTo4JTtsZWZ0OjUwJTt0cmFuc2Zvcm06dHJhbnNsYXRlWCgtNTAlKTtiYWNrZ3JvdW5kOiMwMDA7Ym9yZGVyLXJhZGl1czo0OCUgNDglIDEyJSAxMiU7Ym94LXNoYWRvdzowIDAgOTBweCA0NXB4ICMwMDA7YW5pbWF0aW9uOmxvb20gNHMgZWFzZS1pbi1vdXQgaW5maW5pdGUgYWx0ZXJuYXRlO3otaW5kZXg6LTF9LnNoYWRvdzpiZWZvcmV7Y29udGVudDoiIjtwb3NpdGlvbjphYnNvbHV0ZTt3aWR0aDoxNTBweDtoZWlnaHQ6MTIwcHg7Ym9yZGVyLXJhZGl1czo1MCU7YmFja2dyb3VuZDojMDAwO3RvcDotNTVweDtsZWZ0Oi0xNXB4fS5leWV7cG9zaXRpb246YWJzb2x1dGU7dG9wOjM4JTt3aWR0aDoxOHB4O2hlaWdodDo4cHg7Ym9yZGVyLXJhZGl1czo1MCU7YmFja2dyb3VuZDojZmYyNjNlO2JveC1zaGFkb3c6MCAwIDIycHggOHB4ICNlMDAwMjU7YW5pbWF0aW9uOmJsaW5rIDMuNXMgaW5maW5pdGV9LmxlZnR7bGVmdDpjYWxjKDUwJSAtIDM0cHgpfS5yaWdodHtsZWZ0OmNhbGMoNTAlICsgMTZweCl9QGtleWZyYW1lcyBibGlua3swJSw0MiUsNDYlLDEwMCV7b3BhY2l0eToxfTQ0JXtvcGFjaXR5OjB9fUBrZXlmcmFtZXMgbG9vbXtmcm9te3RyYW5zZm9ybTp0cmFuc2xhdGVYKC01MCUpIHNjYWxlKC43NSl9dG97dHJhbnNmb3JtOnRyYW5zbGF0ZVgoLTUwJSkgc2NhbGUoMS4zKX19LnRlcm1pbmFse2ZvbnQ6MTRweC8xLjggbW9ub3NwYWNlO2NvbG9yOiNiNmU3YzU7dGV4dC1hbGlnbjpsZWZ0O3doaXRlLXNwYWNlOnByZS13cmFwfS5mbGlja2Vye2FuaW1hdGlvbjpmbGlja2VyIC4xNnMgaW5maW5pdGUgYWx0ZXJuYXRlfUBrZXlmcmFtZXMgZmxpY2tlcntmcm9te29wYWNpdHk6LjM1fXRve29wYWNpdHk6MX19Lndhcm5pbmd7Zm9udDpjbGFtcCgxNHB4LDN2dywyMHB4KSBtb25vc3BhY2U7Y29sb3I6I2U2NWM3MDtsZXR0ZXItc3BhY2luZzouMThlbX08L3N0eWxlPjwvaGVhZD48Ym9keT48ZGl2IGlkPSJzY2VuZSI+eyUgaWYga2luZCA9PSAnc2hhZG93JyAlfTxkaXYgY2xhc3M9InNoYWRvdyI+PC9kaXY+PGgxPkRPTidUIExPT0sgQVdBWTwvaDE+PHA+U29tZXRoaW5nIG1vdmVkIGluIHRoZSBkYXJrLjwvcD57JSBlbGlmIGtpbmQgPT0gJ2V5ZXMnICV9PGRpdiBjbGFzcz0iZXllIGxlZnQiPjwvZGl2PjxkaXYgY2xhc3M9ImV5ZSByaWdodCI+PC9kaXY+PGgxPklUIFNFRVMgWU9VPC9oMT48cD5UaGUgZXllcyBhcmUgd2F0Y2hpbmcuPC9wPnslIGVsaWYga2luZCA9PSAndGVybWluYWwnICV9PGRpdj48ZGl2IGNsYXNzPSJ3YXJuaW5nIj5VTktOT1dOIFBST0NFU1MgREVURUNURUQ8L2Rpdj48cHJlIGNsYXNzPSJ0ZXJtaW5hbCIgaWQ9InR5cGVkIj48L3ByZT48L2Rpdj57JSBlbGlmIGtpbmQgPT0gJ3ByZXNlbmNlJyAlfTxkaXYgY2xhc3M9InNoYWRvdyIgc3R5bGU9ImhlaWdodDo2NXZoO3dpZHRoOjM2dnciPjwvZGl2PjxoMSBjbGFzcz0iZmxpY2tlciI+VEhFUkUgSVMgU09NRU9ORSBCRUhJTkQgWU9VPC9oMT48cD5KdXN0IGEgc2NyZWVuIGVmZmVjdC48L3A+eyUgZWxzZSAlfTxkaXYgY2xhc3M9Indhcm5pbmcgZmxpY2tlciI+U0lHTkFMIENPUlJVUFRFRDwvZGl2PjxoMSBjbGFzcz0iZmxpY2tlciI+V0FLRSBVUDwvaDE+PHA+VmlzdWFsIHNpbXVsYXRpb24gb25seS48L3A+eyUgZW5kaWYgJX08L2Rpdj48ZGl2IGNsYXNzPSJ0aW1lciI+QVVUTyBFWElUOiA8c3BhbiBpZD0ic2Vjb25kcyI+OTwvc3Bhbj5zPC9kaXY+PGJ1dHRvbiBjbGFzcz0iZXhpdCIgb25jbGljaz0ibG9jYXRpb24uaHJlZj0nL2Rhc2hib2FyZCciPkV4aXQgc2NhcmU8L2J1dHRvbj48c2NyaXB0PmNvbnN0IGxpbmVzPVsnWzAwOjAwOjAxXSBzaWduYWwgcmVjZWl2ZWQnLCdbMDA6MDA6MDJdIHNvdXJjZTogdW5rbm93bicsJ1swMDowMDowM10gY2hlY2tpbmcgcm9vbS4uLicsJ1swMDowMDowNF0gbW92ZW1lbnQgZGV0ZWN0ZWQnLCdbMDA6MDA6MDVdIHdhaXQuLi4nLCdbMDA6MDA6MDZdIGp1c3QgYSBwcmFuay4gYnJlYXRoZS4nXTtjb25zdCBvdXQ9ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3R5cGVkJyk7bGV0IGk9MDtpZihvdXQpe2xldCB0PXNldEludGVydmFsKCgpPT57b3V0LnRleHRDb250ZW50Kz1saW5lc1tpKytdKydcXG4nO2lmKGk+PWxpbmVzLmxlbmd0aCljbGVhckludGVydmFsKHQpfSw2NTApfWxldCBuPTk7bGV0IGM9ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3NlY29uZHMnKTtsZXQgdD1zZXRJbnRlcnZhbCgoKT0+e2MudGV4dENvbnRlbnQ9LS1uO2lmKG48PTApe2NsZWFySW50ZXJ2YWwodCk7bG9jYXRpb24uaHJlZj0nL2Rhc2hib2FyZCd9fSwxMDAwKTwvc2NyaXB0PjwvYm9keT48L2h0bWw+").decode("utf-8")
+    return render_template_string(html, kind=kind)
 
 @app.post("/admin/fullscreen-image")
 @owner_required

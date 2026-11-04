@@ -7,8 +7,11 @@ from flask import Flask, flash, redirect, render_template_string, request, sessi
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
+# Trust Render's single reverse proxy for visitor IP and HTTPS scheme.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or os.urandom(32)
 db_url = os.environ.get("DATABASE_URL", "sqlite:///raspb.sqlite3")
 if db_url.startswith("postgres://"):
@@ -295,10 +298,13 @@ Type help to see available commands.</div>
       e.preventDefault(); const command=input.value.trim(); if(!command)return;
       line("ramn@raspb:~$ "+command); input.value="";
       try{
-        const r=await fetch("/api/console",{method:"POST",headers:{"Content-Type":"application/json","X-CSRFToken":csrfToken},body:JSON.stringify({command})});
-        const data=await r.json();
-        (data.output||["Request failed."]).forEach(s=>{if(s==="__CLEAR__")out.textContent="";else line(s);});
-      }catch(_){line("Connection error. Try again.");}
+        const r=await fetch("/api/console",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-CSRFToken":csrfToken},body:JSON.stringify({command})});
+        const raw=await r.text(); let data={};
+        try{data=JSON.parse(raw);}catch(_){data={};}
+        if(!r.ok){line("Request failed (HTTP "+r.status+"). "+(data.error||raw.replace(/<[^>]*>/g," ").trim().slice(0,180)||"Reload the terminal and sign in again."));return;}
+        if(!Array.isArray(data.output)){line("Server returned an unexpected response. Reload the terminal.");return;}
+        data.output.forEach(s=>{if(s==="__CLEAR__")out.textContent="";else line(String(s));});
+      }catch(err){line("Connection error: "+(err&&err.message?err.message:"request failed"));}
     });
     </script>
     """, token=token)
@@ -342,7 +348,7 @@ def console_api():
         except ValueError:
             output = ["Invalid IP address."]
     elif action == "myip":
-        output = ["Client IP details are not exposed in this console."]
+        output = [f"Client IP: {request.remote_addr or 'Unavailable'}", "This is the address observed by the web server."]
     elif action == "lookup" and len(parts) == 2:
         try:
             addr = ipaddress.ip_address(parts[1])

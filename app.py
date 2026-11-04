@@ -276,6 +276,7 @@ if __name__ == "__main__":
 @login_required
 def console_page():
     token = generate_csrf()
+    terminal_output = session.pop("terminal_output", [])
     return page("""
     <style>
     .term{background:#030907;border:1px solid #176b43;border-radius:12px;padding:14px;color:#70f5a5;font-family:ui-monospace,monospace;min-height:280px;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -284,8 +285,8 @@ def console_page():
     <h2>RAMN terminal</h2><p class="muted">Session tools and owner account controls. Active network probing is disabled.</p>
     <div id="out" class="term">RAMN // RASPB CONSOLE
 Secure session established.
-Type help to see available commands.</div>
-    <form id="cmdform" class="termline"><input id="cmd" autocomplete="off" placeholder="Enter command..." required><button>Run</button></form>
+Type help to see available commands.{% for item in terminal_output %}<div>{{ item }}</div>{% endfor %}</div>
+    <form id="cmdform" class="termline" method="post" action="{{ url_for('console_api') }}"><input type="hidden" name="csrf_token" value="{{ token }}"><input id="cmd" name="command" autocomplete="off" placeholder="Enter command..." required><button type="submit">Run</button></form>
     <p class="muted"><small>Owner commands require the owner account.</small></p>
     <a href="{{ url_for('admin') if current_user().is_admin else url_for('dashboard') }}">Back to account</a>
     <script>
@@ -307,15 +308,19 @@ Type help to see available commands.</div>
       }catch(err){line("Connection error: "+(err&&err.message?err.message:"request failed"));}
     });
     </script>
-    """, token=token)
+    """, token=token, terminal_output=terminal_output)
 
 @app.post("/api/console")
 @login_required
 def console_api():
     import ipaddress
-    data = request.get_json(silent=True) or {}
+    form_fallback = not request.is_json
+    data = (request.get_json(silent=True) or {}) if request.is_json else request.form
     command = str(data.get("command", ""))[:300].strip()
     if not command:
+        if form_fallback:
+            session["terminal_output"] = ["Enter a command."]
+            return redirect(url_for("console_page"))
         return {"output": ["Enter a command."]}, 400
     parts = command.split()
     action = parts[0].lower()
@@ -327,7 +332,7 @@ def console_api():
             "about                Show console information",
             "scan now             Show app/session status (no network scan)",
             "scan <private IP>    Validate a private IP only; no probing",
-            "myip                 Client address is intentionally hidden",
+            "myip                 Show address observed by the server",
             "lookup <IP>          Classify an IP address locally",
             "phone                Show browser/device user-agent",
             "admin                Show owner status",
@@ -397,4 +402,7 @@ def console_api():
                 output = [f"Unlocked {target.username}."]
     else:
         output = ["Unknown command. Type help."]
+    if form_fallback:
+        session["terminal_output"] = output
+        return redirect(url_for("console_page"))
     return {"output": output}

@@ -4,6 +4,7 @@ from flask import Flask, abort, redirect, render_template_string, request, sessi
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 from werkzeug.middleware.proxy_fix import ProxyFix
+from sqlalchemy import inspect, text
 
 app=Flask(__name__)
 app.wsgi_app=ProxyFix(app.wsgi_app,x_for=1,x_proto=1)
@@ -24,7 +25,12 @@ class Visitor(db.Model):
     ip_address=db.Column(db.String(64),unique=True,nullable=False,index=True)
     last_seen=db.Column(db.DateTime,default=now,index=True,nullable=False)
     visits=db.Column(db.Integer,default=1,nullable=False)
-with app.app_context(): db.create_all()
+    visitor_name=db.Column(db.String(40),nullable=True)
+with app.app_context():
+    db.create_all()
+    cols={c['name'] for c in inspect(db.engine).get_columns(Visitor.__tablename__)}
+    if 'visitor_name' not in cols:
+        with db.engine.begin() as conn: conn.execute(text("ALTER TABLE visitor ADD COLUMN visitor_name VARCHAR(40)"))
 def purge():
     Visitor.query.filter(Visitor.last_seen<now()-timedelta(days=7)).delete(synchronize_session=False)
     db.session.commit()
@@ -46,17 +52,33 @@ BASE=r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="
 @app.route("/")
 def home():
     choice=request.cookies.get("visitor_analytics")
-    body=r"""<div class="top">● &nbsp; TIKTOK CREATOR / OFFICIAL PAGE</div><section class="hero"><div class="eyebrow">WELCOME TO MY CORNER OF THE INTERNET</div><h1>thug<span>orange</span><sup>7</sup></h1><div class="handle">@thugorange7</div><p class="intro">The official spot for my TikTok content. Catch the latest videos and follow along.</p><a class="cta" href="https://www.tiktok.com/@thugorange7" target="_blank" rel="noopener">FOLLOW ON TIKTOK ↗</a><p class="eyebrow" style="margin-top:30px">ONE HANDLE. ALL THE UPDATES.</p></section><section class="below"><div><div class="eyebrow">FIND ME</div><h2>See you on<br><span class="accent">TikTok.</span></h2></div><a class="social" href="https://www.tiktok.com/@thugorange7" target="_blank" rel="noopener"><b>♪ &nbsp; @thugorange7</b><small>Watch videos · Follow · Stay updated</small></a></section><footer><span>© thugorange7</span><a href="/privacy">PRIVACY</a><a href="/owner">OWNER</a></footer>{% if not choice %}<div class="consent"><div><b>Privacy choice</b><p>This site stores your IP address and visit time for basic statistics only if you choose Allow. Only the site owner can see it. Records are deleted after 7 days.</p></div><form method="post" action="/privacy/consent"><input type="hidden" name="csrf_token" value="{{ token }}"><button class="yes" name="choice" value="yes">Allow</button><button class="no" name="choice" value="no">Decline</button></form></div>{% endif %}"""
+    body=r"""<div class="top">● &nbsp; TIKTOK CREATOR / OFFICIAL PAGE</div><section class="hero"><div class="eyebrow">WELCOME TO MY CORNER OF THE INTERNET</div><h1>thug<span>orange</span><sup>7</sup></h1><div class="handle">@thugorange7</div><p class="intro">The official spot for my TikTok content. Catch the latest videos and follow along.</p><a class="cta" href="https://www.tiktok.com/@thugorange7" target="_blank" rel="noopener">FOLLOW ON TIKTOK ↗</a><p class="eyebrow" style="margin-top:30px">ONE HANDLE. ALL THE UPDATES.</p></section>{% if choice == "yes" %}<section class="card" style="max-width:520px;margin:0 auto 55px"><b>Leave a name (optional)</b><p class="muted">Your name is shown only in the private owner dashboard. It is stored with your opted-in visit record for up to 7 days.</p><form method="post" action="/visitor/name"><input type="hidden" name="csrf_token" value="{{ token }}"><input name="visitor_name" maxlength="40" required placeholder="Your name or nickname"><button class="yes">Save name</button></form></section>{% endif %}<section class="below"><div><div class="eyebrow">FIND ME</div><h2>See you on<br><span class="accent">TikTok.</span></h2></div><a class="social" href="https://www.tiktok.com/@thugorange7" target="_blank" rel="noopener"><b>♪ &nbsp; @thugorange7</b><small>Watch videos · Follow · Stay updated</small></a></section><footer><span>© thugorange7</span><a href="/privacy">PRIVACY</a><a href="/owner">OWNER</a></footer>{% if not choice %}<div class="consent"><div><b>Privacy choice</b><p>This site stores your IP address and visit time for basic statistics only if you choose Allow. Only the site owner can see it. Records are deleted after 7 days. If you allow, you can also optionally leave a name; it is visible only to the site owner and is deleted with the visit record after 7 days.</p></div><form method="post" action="/privacy/consent"><input type="hidden" name="csrf_token" value="{{ token }}"><button class="yes" name="choice" value="yes">Allow</button><button class="no" name="choice" value="no">Decline</button></form></div>{% endif %}"""
     return render_template_string(BASE,body=render_template_string(body,choice=choice,token=generate_csrf()))
 @app.route("/privacy")
 def privacy():
-    body=r"""<section class="page"><div class="eyebrow">PRIVACY</div><h1>Your data.<br><span class="accent">Your choice.</span></h1><div class="card"><p>Visitor IP addresses are stored only if you choose Allow in the privacy notice. The site owner can view those IP addresses and visit counts in the private owner page. Records are automatically deleted after 7 days.</p><p>If you choose Decline, this site does not save your IP in its visitor analytics database. The hosting provider may still process connection data to operate the website.</p><form method="post" action="/privacy/consent"><input type="hidden" name="csrf_token" value="{{ token }}"><button class="yes" name="choice" value="yes">Allow analytics</button> <button class="no" name="choice" value="no">Decline analytics</button></form></div><a class="back" href="/">← Back</a></section>"""
+    body=r"""<section class="page"><div class="eyebrow">PRIVACY</div><h1>Your data.<br><span class="accent">Your choice.</span></h1><div class="card"><p>Visitor IP addresses and any name you choose to submit are stored only after you choose Allow. Leaving a name is optional. The site owner can view the IP address, name, and visit count in the private owner page. Records are automatically deleted after 7 days.</p><p>If you choose Decline, this site does not save your IP in its visitor analytics database. The hosting provider may still process connection data to operate the website.</p><form method="post" action="/privacy/consent"><input type="hidden" name="csrf_token" value="{{ token }}"><button class="yes" name="choice" value="yes">Allow analytics</button> <button class="no" name="choice" value="no">Decline analytics</button></form></div><a class="back" href="/">← Back</a></section>"""
     return render_template_string(BASE,body=render_template_string(body,token=generate_csrf()))
 @app.route("/privacy/consent",methods=["POST"])
 def consent():
     c=request.form.get("choice")
     if c not in ("yes","no"): abort(400)
     r=redirect(url_for("home")); r.set_cookie("visitor_analytics",c,max_age=2592000,secure=app.config["SESSION_COOKIE_SECURE"],httponly=True,samesite="Lax"); return r
+@app.route("/visitor/name",methods=["POST"])
+def visitor_name():
+    if request.cookies.get("visitor_analytics")!="yes": abort(403)
+    name="".join(ch for ch in request.form.get("visitor_name","").strip() if ch.isprintable())[:40]
+    if not name: abort(400)
+    ip=(request.remote_addr or "")[:64]
+    if not ip: abort(400)
+    try:
+        purge()
+        v=Visitor.query.filter_by(ip_address=ip).first()
+        if v: v.visitor_name=name; v.last_seen=now()
+        else: db.session.add(Visitor(ip_address=ip,visitor_name=name,last_seen=now(),visits=1))
+        db.session.commit()
+    except Exception:
+        db.session.rollback(); abort(500)
+    return redirect(url_for("home"))
 @app.route("/owner",methods=["GET","POST"])
 def owner():
     if request.method=="POST":
@@ -67,7 +89,7 @@ def owner():
         body=r"""<section class="page"><div class="eyebrow">PRIVATE AREA</div><h1>Owner <span class="accent">login.</span></h1><form class="card" method="post"><input type="hidden" name="csrf_token" value="{{ token }}"><label>Username</label><input name="username" required><label>Password</label><input name="password" type="password" required><button class="yes">Sign in</button></form><a class="back" href="/">← Back</a></section>"""
         return render_template_string(BASE,body=render_template_string(body,token=generate_csrf()))
     purge(); rows=Visitor.query.order_by(Visitor.last_seen.desc()).limit(250).all()
-    body=r"""<section class="page"><div class="eyebrow">PRIVATE DASHBOARD</div><h1>Visitor <span class="accent">stats.</span></h1><p class="muted">Only visitors who accepted analytics appear here. IP records expire after 7 days.</p><h2>{{ rows|length }} unique IPs</h2>{% for v in rows %}<div class="visitor"><code>{{ v.ip_address }}</code><span>{{ v.visits }} visits · {{ v.last_seen.strftime('%d %b %Y %H:%M UTC') }}</span></div>{% else %}<p class="muted">No opt-in visitors yet.</p>{% endfor %}<form method="post" action="/owner/logout"><input type="hidden" name="csrf_token" value="{{ token }}"><button class="no">Log out</button></form><a class="back" href="/">← View site</a></section>"""
+    body=r"""<section class="page"><div class="eyebrow">PRIVATE DASHBOARD</div><h1>Visitor <span class="accent">stats.</span></h1><p class="muted">Only visitors who accepted analytics appear here. IP records expire after 7 days.</p><h2>{{ rows|length }} unique IPs</h2>{% for v in rows %}<div class="visitor"><div>{% if v.visitor_name %}<b>{{ v.visitor_name }}</b><br>{% endif %}<code>{{ v.ip_address }}</code></div><span>{{ v.visits }} visits · {{ v.last_seen.strftime('%d %b %Y %H:%M UTC') }}</span></div>{% else %}<p class="muted">No opt-in visitors yet.</p>{% endfor %}<form method="post" action="/owner/logout"><input type="hidden" name="csrf_token" value="{{ token }}"><button class="no">Log out</button></form><a class="back" href="/">← View site</a></section>"""
     return render_template_string(BASE,body=render_template_string(body,rows=rows,token=generate_csrf()))
 @app.route("/owner/logout",methods=["POST"])
 def logout():

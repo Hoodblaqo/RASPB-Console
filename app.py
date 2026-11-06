@@ -1,5 +1,4 @@
 import os
-import base64
 import io
 import re
 import json
@@ -124,7 +123,7 @@ def deliver_pending_troll_redirect():
     user = current_user()
     if not user or user.is_admin or request.method != "GET":
         return None
-    if request.endpoint in ("screen_page", "screen_image", "logout", "login", "register", "locked", "static"):
+    if request.endpoint in ("screen_page", "screen_image", "logout", "login", "register", "locked", "static", "prank_check"):
         return None
     pending = TrollRedirect.query.filter_by(user_id=user.id).first()
     if pending:
@@ -152,10 +151,11 @@ a{color:#8fc5ff}.panel{padding:15px;margin:12px 0;background:#0b1220;border:1px 
 .notice{padding:12px;border-radius:10px;background:#312b16;margin:10px 0}.error{color:#ff9aab}.success{color:#9ce7bb}
 small{color:#9ba9bd}.tag{font-size:12px;color:#9fc9ff}hr{border:0;border-top:1px solid #26364c;margin:22px 0}
 </style></head><body><main>
-<h1>RASPB <span class="tag">CONSOLE</span></h1><div class="muted">Shared access • owner-managed • private notices</div>
+<h1>RASPB <span class="tag">CONSOLE</span></h1><div class="muted">Shared access â¢ owner-managed â¢ private notices</div>
 {% with items = get_flashed_messages(with_categories=true) %}{% for category, message in items %}<p class="{{ category }}">{{ message }}</p>{% endfor %}{% endwith %}
 {{ content|safe }}
-</main></body></html>
+</main><script>(()=>{if(location.pathname==='/prank')return;let busy=false;const check=async()=>{if(busy||document.hidden)return;busy=true;try{const r=await fetch('/prank/check',{credentials:'same-origin',cache:'no-store'});if(r.ok){const d=await r.json();if(d.go){location.href='/prank';return;}}}catch(e){}finally{busy=false;}};setInterval(check,1800);check();})();</script>
+</body></html>
 """
 
 def page(content, **context):
@@ -169,7 +169,7 @@ def home():
         return redirect(url_for("locked" if user.is_locked else ("admin" if user.is_admin else "dashboard")))
     return page("""
     <h2>Welcome</h2><p class="muted">Sign in to your shared RASPB account, or create one for your group.</p>
-    <p><a href="{{ url_for('login') }}">Log in</a> · <a href="{{ url_for('register') }}">Create account</a></p>
+    <p><a href="{{ url_for('login') }}">Log in</a> Â· <a href="{{ url_for('register') }}">Create account</a></p>
     """)
 
 @app.route("/register", methods=["GET", "POST"])
@@ -179,7 +179,7 @@ def register():
         password = request.form.get("password", "")
         owner_name = os.environ.get("OWNER_USERNAME", "").strip().lower()
         if not re.fullmatch(r"[a-z0-9_]{3,32}", username):
-            flash("Username must be 3–32 characters: letters, numbers or underscores.", "error")
+            flash("Username must be 3â32 characters: letters, numbers or underscores.", "error")
         elif username == owner_name:
             flash("That username is reserved.", "error")
         elif len(password) < 8:
@@ -251,24 +251,28 @@ def admin():
     users = User.query.filter_by(is_admin=False).order_by(User.username.asc()).all()
     return page("""
     <h2>Owner panel</h2><p><a href="{{ url_for('console_page') }}">Open RAMN terminal</a></p><p class="muted">Only the configured owner account can use these controls.</p>
-    {% for u in users %}<div class="panel"><b>{{ u.username }}</b> · {% if u.is_locked %}<span class="error">LOCKED</span>{% else %}<span class="success">ACTIVE</span>{% endif %}
-    <p><small>Joined: {{ u.created_at }} · Last login: {{ u.last_login or "Never" }}</small></p>
+    {% for u in users %}<div class="panel"><b>{{ u.username }}</b> Â· {% if u.is_locked %}<span class="error">LOCKED</span>{% else %}<span class="success">ACTIVE</span>{% endif %}
+    <p><small>Joined: {{ u.created_at }} Â· Last login: {{ u.last_login or "Never" }}</small></p>
     {% if u.is_locked %}<form method="post" action="{{ url_for('unlock_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Unlock account</button></form>
     {% else %}<form method="post" action="{{ url_for('lock_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><textarea name="message" maxlength="500" placeholder="Private message explaining the lock..." required></textarea><button class="danger">Lock and send private message</button></form>{% endif %}
     <form method="post" action="{{ url_for('message_user', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input name="message" maxlength="500" placeholder="Send a private message (optional)" required><button class="secondary">Send private message</button></form>
     <form method="post" action="{{ url_for('send_troll', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Redirect this user to the troll screen once</button></form>
-     <div class="tag">ONE-TIME HORROR PRANKS</div>
+     <div class="tag">ONE-TIME VISUAL EFFECTS</div>
      <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='shadow') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Shadow figure</button></form>
      <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='eyes') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Watching eyes</button></form>
      <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='terminal') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Haunted terminal</button></form>
      <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='presence') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Behind you</button></form>
      <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='nightmare') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Corrupted nightmare</button></form>
+     <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='static') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Static storm</button></form>
+     <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='moon') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Red moon</button></form>
+     <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='echo') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Echo presence</button></form>
+     <form method="post" action="{{ url_for('queue_prank', user_id=u.id, kind='bars') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary">Frequency shift</button></form>
     </div>{% else %}<p class="muted">No member accounts yet.</p>{% endfor %}
     <h2>Fullscreen screen</h2><div class="panel"><p class="muted">Upload an image to display publicly at <a href="{{ url_for('screen_page') }}" target="_blank">/screen</a>. Maximum 8 MB. PNG, JPG, WebP or GIF.</p>
     <form method="post" action="{{ url_for('upload_fullscreen_image') }}" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="file" name="image" accept="image/png,image/jpeg,image/webp,image/gif" required><button>Upload / replace screen image</button></form>
     <p><a href="{{ url_for('screen_page') }}" target="_blank">Open public fullscreen screen</a></p></div>
-    <h2>Recent login history</h2>{% for u in users %}{% for e in u.login_events[-5:] %}<p><small>{{ u.username }} · {{ e.created_at }}</small></p>{% endfor %}{% endfor %}
+    <h2>Recent login history</h2>{% for u in users %}{% for e in u.login_events[-5:] %}<p><small>{{ u.username }} Â· {{ e.created_at }}</small></p>{% endfor %}{% endfor %}
     <p><a href="{{ url_for('logout') }}">Log out</a></p>
     """, users=users)
 
@@ -334,7 +338,7 @@ def send_troll(user_id):
 @app.post("/admin/prank/<int:user_id>/<kind>")
 @owner_required
 def queue_prank(user_id, kind):
-    allowed = ("shadow", "eyes", "terminal", "presence", "nightmare")
+    allowed = ("shadow", "eyes", "terminal", "presence", "nightmare", "static", "moon", "echo", "bars")
     target = db.session.get(User, user_id)
     if not target or target.is_admin or kind not in allowed:
         flash("Choose a regular member and a valid prank.", "error")
@@ -346,16 +350,30 @@ def queue_prank(user_id, kind):
             prank.kind = kind
             prank.created_at = now()
         db.session.commit()
-        flash("One-time visual scare queued for " + target.username + ". It runs on their next page visit and ends automatically.", "success")
+        flash("Visual effect queued for " + target.username + ". It starts automatically while they are signed in and ends automatically.", "success")
     return redirect(url_for("admin"))
+
+@app.route("/prank/check")
+@login_required
+def prank_check():
+    user = current_user()
+    if not user or user.is_admin:
+        return {"go": False}
+    prank = TrollPrank.query.filter_by(user_id=user.id).first()
+    if not prank:
+        return {"go": False}
+    session["pending_prank"] = prank.kind
+    db.session.delete(prank)
+    db.session.commit()
+    return {"go": True}
 
 @app.route("/prank")
 @login_required
 def prank_page():
     kind = session.pop("pending_prank", None)
-    if kind not in ("shadow", "eyes", "terminal", "presence", "nightmare"):
+    if kind not in ("shadow", "eyes", "terminal", "presence", "nightmare", "static", "moon", "echo", "bars"):
         return redirect(url_for("dashboard"))
-    html = base64.b64decode("PCFkb2N0eXBlIGh0bWw+PGh0bWw+PGhlYWQ+PG1ldGEgY2hhcnNldD0idXRmLTgiPjxtZXRhIG5hbWU9InZpZXdwb3J0IiBjb250ZW50PSJ3aWR0aD1kZXZpY2Utd2lkdGgsaW5pdGlhbC1zY2FsZT0xIj48dGl0bGU+UkFTUEIgLy8gU0lHTkFMPC90aXRsZT48c3R5bGU+Kntib3gtc2l6aW5nOmJvcmRlci1ib3h9aHRtbCxib2R5e21hcmdpbjowO3dpZHRoOjEwMCU7aGVpZ2h0OjEwMCU7YmFja2dyb3VuZDojMDMwNDA3O2NvbG9yOiNkZGQ7Zm9udDoxNnB4IHN5c3RlbS11aTtvdmVyZmxvdzpoaWRkZW59Ym9keXtkaXNwbGF5OmdyaWQ7cGxhY2UtaXRlbXM6Y2VudGVyO2JhY2tncm91bmQ6cmFkaWFsLWdyYWRpZW50KGVsbGlwc2UsIzE4MTMxYiwjMDAwIDc1JSl9I3NjZW5le3Bvc2l0aW9uOnJlbGF0aXZlO3dpZHRoOjEwMHZ3O2hlaWdodDoxMDB2aDtkaXNwbGF5OmdyaWQ7cGxhY2UtaXRlbXM6Y2VudGVyO3RleHQtYWxpZ246Y2VudGVyO3BhZGRpbmc6MjRweH1oMXtmb250LXNpemU6Y2xhbXAoMjhweCw3dncsNjRweCk7bGV0dGVyLXNwYWNpbmc6LjEyZW07dGV4dC1zaGFkb3c6MCAwIDIycHggIzljMjMzY31we2NvbG9yOiNhYWF9LmV4aXR7cG9zaXRpb246Zml4ZWQ7Ym90dG9tOjE4cHg7cmlnaHQ6MThweDt6LWluZGV4Ojk7YmFja2dyb3VuZDojMjIyO2NvbG9yOiNlZWU7cGFkZGluZzoxMnB4IDE2cHg7Ym9yZGVyOjFweCBzb2xpZCAjNjY2O2JvcmRlci1yYWRpdXM6OXB4fS50aW1lcntwb3NpdGlvbjpmaXhlZDtib3R0b206MThweDtsZWZ0OjE4cHg7Y29sb3I6Izc3Nztmb250OjEycHggbW9ub3NwYWNlfS5zaGFkb3d7cG9zaXRpb246YWJzb2x1dGU7d2lkdGg6MTIwcHg7aGVpZ2h0OjI3MHB4O2JvdHRvbTo4JTtsZWZ0OjUwJTt0cmFuc2Zvcm06dHJhbnNsYXRlWCgtNTAlKTtiYWNrZ3JvdW5kOiMwMDA7Ym9yZGVyLXJhZGl1czo0OCUgNDglIDEyJSAxMiU7Ym94LXNoYWRvdzowIDAgOTBweCA0NXB4ICMwMDA7YW5pbWF0aW9uOmxvb20gNHMgZWFzZS1pbi1vdXQgaW5maW5pdGUgYWx0ZXJuYXRlO3otaW5kZXg6LTF9LnNoYWRvdzpiZWZvcmV7Y29udGVudDoiIjtwb3NpdGlvbjphYnNvbHV0ZTt3aWR0aDoxNTBweDtoZWlnaHQ6MTIwcHg7Ym9yZGVyLXJhZGl1czo1MCU7YmFja2dyb3VuZDojMDAwO3RvcDotNTVweDtsZWZ0Oi0xNXB4fS5leWV7cG9zaXRpb246YWJzb2x1dGU7dG9wOjM4JTt3aWR0aDoxOHB4O2hlaWdodDo4cHg7Ym9yZGVyLXJhZGl1czo1MCU7YmFja2dyb3VuZDojZmYyNjNlO2JveC1zaGFkb3c6MCAwIDIycHggOHB4ICNlMDAwMjU7YW5pbWF0aW9uOmJsaW5rIDMuNXMgaW5maW5pdGV9LmxlZnR7bGVmdDpjYWxjKDUwJSAtIDM0cHgpfS5yaWdodHtsZWZ0OmNhbGMoNTAlICsgMTZweCl9QGtleWZyYW1lcyBibGlua3swJSw0MiUsNDYlLDEwMCV7b3BhY2l0eToxfTQ0JXtvcGFjaXR5OjB9fUBrZXlmcmFtZXMgbG9vbXtmcm9te3RyYW5zZm9ybTp0cmFuc2xhdGVYKC01MCUpIHNjYWxlKC43NSl9dG97dHJhbnNmb3JtOnRyYW5zbGF0ZVgoLTUwJSkgc2NhbGUoMS4zKX19LnRlcm1pbmFse2ZvbnQ6MTRweC8xLjggbW9ub3NwYWNlO2NvbG9yOiNiNmU3YzU7dGV4dC1hbGlnbjpsZWZ0O3doaXRlLXNwYWNlOnByZS13cmFwfS5mbGlja2Vye2FuaW1hdGlvbjpmbGlja2VyIC4xNnMgaW5maW5pdGUgYWx0ZXJuYXRlfUBrZXlmcmFtZXMgZmxpY2tlcntmcm9te29wYWNpdHk6LjM1fXRve29wYWNpdHk6MX19Lndhcm5pbmd7Zm9udDpjbGFtcCgxNHB4LDN2dywyMHB4KSBtb25vc3BhY2U7Y29sb3I6I2U2NWM3MDtsZXR0ZXItc3BhY2luZzouMThlbX08L3N0eWxlPjwvaGVhZD48Ym9keT48ZGl2IGlkPSJzY2VuZSI+eyUgaWYga2luZCA9PSAnc2hhZG93JyAlfTxkaXYgY2xhc3M9InNoYWRvdyI+PC9kaXY+PGgxPkRPTidUIExPT0sgQVdBWTwvaDE+PHA+U29tZXRoaW5nIG1vdmVkIGluIHRoZSBkYXJrLjwvcD57JSBlbGlmIGtpbmQgPT0gJ2V5ZXMnICV9PGRpdiBjbGFzcz0iZXllIGxlZnQiPjwvZGl2PjxkaXYgY2xhc3M9ImV5ZSByaWdodCI+PC9kaXY+PGgxPklUIFNFRVMgWU9VPC9oMT48cD5UaGUgZXllcyBhcmUgd2F0Y2hpbmcuPC9wPnslIGVsaWYga2luZCA9PSAndGVybWluYWwnICV9PGRpdj48ZGl2IGNsYXNzPSJ3YXJuaW5nIj5VTktOT1dOIFBST0NFU1MgREVURUNURUQ8L2Rpdj48cHJlIGNsYXNzPSJ0ZXJtaW5hbCIgaWQ9InR5cGVkIj48L3ByZT48L2Rpdj57JSBlbGlmIGtpbmQgPT0gJ3ByZXNlbmNlJyAlfTxkaXYgY2xhc3M9InNoYWRvdyIgc3R5bGU9ImhlaWdodDo2NXZoO3dpZHRoOjM2dnciPjwvZGl2PjxoMSBjbGFzcz0iZmxpY2tlciI+VEhFUkUgSVMgU09NRU9ORSBCRUhJTkQgWU9VPC9oMT48cD5KdXN0IGEgc2NyZWVuIGVmZmVjdC48L3A+eyUgZWxzZSAlfTxkaXYgY2xhc3M9Indhcm5pbmcgZmxpY2tlciI+U0lHTkFMIENPUlJVUFRFRDwvZGl2PjxoMSBjbGFzcz0iZmxpY2tlciI+V0FLRSBVUDwvaDE+PHA+VmlzdWFsIHNpbXVsYXRpb24gb25seS48L3A+eyUgZW5kaWYgJX08L2Rpdj48ZGl2IGNsYXNzPSJ0aW1lciI+QVVUTyBFWElUOiA8c3BhbiBpZD0ic2Vjb25kcyI+OTwvc3Bhbj5zPC9kaXY+PGJ1dHRvbiBjbGFzcz0iZXhpdCIgb25jbGljaz0ibG9jYXRpb24uaHJlZj0nL2Rhc2hib2FyZCciPkV4aXQgc2NhcmU8L2J1dHRvbj48c2NyaXB0PmNvbnN0IGxpbmVzPVsnWzAwOjAwOjAxXSBzaWduYWwgcmVjZWl2ZWQnLCdbMDA6MDA6MDJdIHNvdXJjZTogdW5rbm93bicsJ1swMDowMDowM10gY2hlY2tpbmcgcm9vbS4uLicsJ1swMDowMDowNF0gbW92ZW1lbnQgZGV0ZWN0ZWQnLCdbMDA6MDA6MDVdIHdhaXQuLi4nLCdbMDA6MDA6MDZdIGp1c3QgYSBwcmFuay4gYnJlYXRoZS4nXTtjb25zdCBvdXQ9ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3R5cGVkJyk7bGV0IGk9MDtpZihvdXQpe2xldCB0PXNldEludGVydmFsKCgpPT57b3V0LnRleHRDb250ZW50Kz1saW5lc1tpKytdKydcXG4nO2lmKGk+PWxpbmVzLmxlbmd0aCljbGVhckludGVydmFsKHQpfSw2NTApfWxldCBuPTk7bGV0IGM9ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3NlY29uZHMnKTtsZXQgdD1zZXRJbnRlcnZhbCgoKT0+e2MudGV4dENvbnRlbnQ9LS1uO2lmKG48PTApe2NsZWFySW50ZXJ2YWwodCk7bG9jYXRpb24uaHJlZj0nL2Rhc2hib2FyZCd9fSwxMDAwKTwvc2NyaXB0PjwvYm9keT48L2h0bWw+").decode("utf-8")
+    html = base64.b64decode("PCFkb2N0eXBlIGh0bWw+PGh0bWw+PGhlYWQ+PG1ldGEgY2hhcnNldD0idXRmLTgiPjxtZXRhIG5hbWU9InZpZXdwb3J0IiBjb250ZW50PSJ3aWR0aD1kZXZpY2Utd2lkdGgsaW5pdGlhbC1zY2FsZT0xIj48dGl0bGU+UkFTUEIgLy8gU0lHTkFMPC90aXRsZT48c3R5bGU+Kntib3gtc2l6aW5nOmJvcmRlci1ib3h9aHRtbCxib2R5e21hcmdpbjowO3dpZHRoOjEwMCU7aGVpZ2h0OjEwMCU7YmFja2dyb3VuZDojMDMwNDA3O2NvbG9yOiNkZGQ7Zm9udDoxNnB4IHN5c3RlbS11aTtvdmVyZmxvdzpoaWRkZW59Ym9keXtkaXNwbGF5OmdyaWQ7cGxhY2UtaXRlbXM6Y2VudGVyO2JhY2tncm91bmQ6cmFkaWFsLWdyYWRpZW50KGVsbGlwc2UsIzE4MTMxYiwjMDAwIDc1JSl9I3NjZW5le3Bvc2l0aW9uOnJlbGF0aXZlO3dpZHRoOjEwMHZ3O2hlaWdodDoxMDB2aDtkaXNwbGF5OmdyaWQ7cGxhY2UtaXRlbXM6Y2VudGVyO3RleHQtYWxpZ246Y2VudGVyO3BhZGRpbmc6MjRweH1oMXtmb250LXNpemU6Y2xhbXAoMjhweCw3dncsNjRweCk7bGV0dGVyLXNwYWNpbmc6LjEyZW07dGV4dC1zaGFkb3c6MCAwIDIycHggIzljMjMzY31we2NvbG9yOiNhYWF9LmV4aXR7cG9zaXRpb246Zml4ZWQ7Ym90dG9tOjE4cHg7cmlnaHQ6MThweDt6LWluZGV4Ojk7YmFja2dyb3VuZDojMjIyO2NvbG9yOiNlZWU7cGFkZGluZzoxMnB4IDE2cHg7Ym9yZGVyOjFweCBzb2xpZCAjNjY2O2JvcmRlci1yYWRpdXM6OXB4fS50aW1lcntwb3NpdGlvbjpmaXhlZDtib3R0b206MThweDtsZWZ0OjE4cHg7Y29sb3I6Izc3Nztmb250OjEycHggbW9ub3NwYWNlfS5zaGFkb3d7cG9zaXRpb246YWJzb2x1dGU7d2lkdGg6MTIwcHg7aGVpZ2h0OjI3MHB4O2JvdHRvbTo4JTtsZWZ0OjUwJTt0cmFuc2Zvcm06dHJhbnNsYXRlWCgtNTAlKTtiYWNrZ3JvdW5kOiMwMDA7Ym9yZGVyLXJhZGl1czo0OCUgNDglIDEyJSAxMiU7Ym94LXNoYWRvdzowIDAgOTBweCA0NXB4ICMwMDA7YW5pbWF0aW9uOmxvb20gNHMgZWFzZS1pbi1vdXQgaW5maW5pdGUgYWx0ZXJuYXRlO3otaW5kZXg6LTF9LnNoYWRvdzpiZWZvcmV7Y29udGVudDoiIjtwb3NpdGlvbjphYnNvbHV0ZTt3aWR0aDoxNTBweDtoZWlnaHQ6MTIwcHg7Ym9yZGVyLXJhZGl1czo1MCU7YmFja2dyb3VuZDojMDAwO3RvcDotNTVweDtsZWZ0Oi0xNXB4fS5leWV7cG9zaXRpb246YWJzb2x1dGU7dG9wOjM4JTt3aWR0aDoxOHB4O2hlaWdodDo4cHg7Ym9yZGVyLXJhZGl1czo1MCU7YmFja2dyb3VuZDojZmYyNjNlO2JveC1zaGFkb3c6MCAwIDIycHggOHB4ICNlMDAwMjU7YW5pbWF0aW9uOmJsaW5rIDMuNXMgaW5maW5pdGV9LmxlZnR7bGVmdDpjYWxjKDUwJSAtIDM0cHgpfS5yaWdodHtsZWZ0OmNhbGMoNTAlICsgMTZweCl9QGtleWZyYW1lcyBibGlua3swJSw0MiUsNDYlLDEwMCV7b3BhY2l0eToxfTQ0JXtvcGFjaXR5OjB9fUBrZXlmcmFtZXMgbG9vbXtmcm9te3RyYW5zZm9ybTp0cmFuc2xhdGVYKC01MCUpIHNjYWxlKC43NSl9dG97dHJhbnNmb3JtOnRyYW5zbGF0ZVgoLTUwJSkgc2NhbGUoMS4zKX19LnRlcm1pbmFse2ZvbnQ6MTRweC8xLjggbW9ub3NwYWNlO2NvbG9yOiNiNmU3YzU7dGV4dC1hbGlnbjpsZWZ0O3doaXRlLXNwYWNlOnByZS13cmFwfS5mbGlja2Vye2FuaW1hdGlvbjpmbGlja2VyIC4xNnMgaW5maW5pdGUgYWx0ZXJuYXRlfUBrZXlmcmFtZXMgZmxpY2tlcntmcm9te29wYWNpdHk6LjM1fXRve29wYWNpdHk6MX19Lndhcm5pbmd7Zm9udDpjbGFtcCgxNHB4LDN2dywyMHB4KSBtb25vc3BhY2U7Y29sb3I6I2U2NWM3MDtsZXR0ZXItc3BhY2luZzouMThlbX0uc3RhdGlje3Bvc2l0aW9uOmFic29sdXRlO2luc2V0OjA7b3BhY2l0eTouMjtiYWNrZ3JvdW5kOnJlcGVhdGluZy1saW5lYXItZ3JhZGllbnQoMGRlZywjZmZmIDAgMXB4LHRyYW5zcGFyZW50IDFweCA0cHgpO2FuaW1hdGlvbjpmbGlja2VyIC4xcyBpbmZpbml0ZSBhbHRlcm5hdGV9Lm1vb257d2lkdGg6MjIwcHg7aGVpZ2h0OjIyMHB4O2JvcmRlci1yYWRpdXM6NTAlO2JhY2tncm91bmQ6cmFkaWFsLWdyYWRpZW50KGNpcmNsZSBhdCAzNSUgMzUlLCNmZmI0YTIsI2ExMGQyOCA2NSUsIzI0MDAwYSk7Ym94LXNoYWRvdzowIDAgOTBweCAjYTEwZDI4ODg7YW5pbWF0aW9uOmxvb20gNHMgaW5maW5pdGUgYWx0ZXJuYXRlfS5lY2hve2ZvbnQtc2l6ZTpjbGFtcCgzMnB4LDh2dyw3NnB4KTt0ZXh0LXNoYWRvdzo0cHggMCAjZTIzLC00cHggMCAjMjlmO2FuaW1hdGlvbjpmbGlja2VyIC4ycyBpbmZpbml0ZSBhbHRlcm5hdGV9LmJhcnN7Zm9udDo0MHB4IG1vbm9zcGFjZTtsZXR0ZXItc3BhY2luZzouNGVtO2FuaW1hdGlvbjpibGluayAuNXMgaW5maW5pdGUgYWx0ZXJuYXRlfTwvc3R5bGU+PC9oZWFkPjxib2R5PjxkaXYgaWQ9InNjZW5lIj57JSBpZiBraW5kID09ICdzaGFkb3cnICV9PGRpdiBjbGFzcz0ic2hhZG93Ij48L2Rpdj48aDE+RE9OJ1QgTE9PSyBBV0FZPC9oMT48cD5Tb21ldGhpbmcgbW92ZWQgaW4gdGhlIGRhcmsuPC9wPnslIGVsaWYga2luZCA9PSAnZXllcycgJX08ZGl2IGNsYXNzPSJleWUgbGVmdCI+PC9kaXY+PGRpdiBjbGFzcz0iZXllIHJpZ2h0Ij48L2Rpdj48aDE+SVQgU0VFUyBZT1U8L2gxPjxwPlRoZSBleWVzIGFyZSB3YXRjaGluZy48L3A+eyUgZWxpZiBraW5kID09ICd0ZXJtaW5hbCcgJX08ZGl2PjxkaXYgY2xhc3M9Indhcm5pbmciPlVOS05PV04gUFJPQ0VTUyBERVRFQ1RFRDwvZGl2PjxwcmUgY2xhc3M9InRlcm1pbmFsIiBpZD0idHlwZWQiPjwvcHJlPjwvZGl2PnslIGVsaWYga2luZCA9PSAncHJlc2VuY2UnICV9PGRpdiBjbGFzcz0ic2hhZG93IiBzdHlsZT0iaGVpZ2h0OjY1dmg7d2lkdGg6MzZ2dyI+PC9kaXY+PGgxIGNsYXNzPSJmbGlja2VyIj5USEVSRSBJUyBTT01FT05FIEJFSElORCBZT1U8L2gxPjxwPkp1c3QgYSBzY3JlZW4gZWZmZWN0LjwvcD57JSBlbGlmIGtpbmQgPT0gJ3N0YXRpYycgJX08ZGl2IGNsYXNzPSJzdGF0aWMiPjwvZGl2PjxoMT5OTyBTSUdOQUw8L2gxPjxwPlBpY3R1cmUgaW50ZXJmZXJlbmNlLjwvcD57JSBlbGlmIGtpbmQgPT0gJ21vb24nICV9PGRpdiBjbGFzcz0ibW9vbiI+PC9kaXY+PGgxPlJFRCBNT09OPC9oMT48cD5UaGUgbmlnaHQgZmVlbHMgZGlmZmVyZW50LjwvcD57JSBlbGlmIGtpbmQgPT0gJ2VjaG8nICV9PGgxIGNsYXNzPSJlY2hvIj5XSE8nUyBUSEVSRT88L2gxPjxwPkEgc3RyYW5nZSBlY2hvIGZpbGxzIHRoZSBzY3JlZW4uPC9wPnslIGVsaWYga2luZCA9PSAnYmFycycgJX08ZGl2IGNsYXNzPSJiYXJzIj7ilrAg4paxIOKWsCDilrAg4paxPC9kaXY+PGgxPkZSRVFVRU5DWSBTSElGVDwvaDE+PHA+U2lnbmFsIGZhZGluZyBpbiBhbmQgb3V0LjwvcD57JSBlbHNlICV9PGRpdiBjbGFzcz0id2FybmluZyBmbGlja2VyIj5TSUdOQUwgQ09SUlVQVEVEPC9kaXY+PGgxIGNsYXNzPSJmbGlja2VyIj5XQUtFIFVQPC9oMT48cD5WaXN1YWwgZWZmZWN0LjwvcD57JSBlbmRpZiAlfTwvZGl2PjxkaXYgY2xhc3M9InRpbWVyIj5BVVRPIEVYSVQ6IDxzcGFuIGlkPSJzZWNvbmRzIj45PC9zcGFuPnM8L2Rpdj48YnV0dG9uIGNsYXNzPSJleGl0IiBvbmNsaWNrPSJsb2NhdGlvbi5ocmVmPScvZGFzaGJvYXJkJyI+RXhpdCBzY2FyZTwvYnV0dG9uPjxzY3JpcHQ+Y29uc3QgbGluZXM9WydbMDA6MDA6MDFdIHNpZ25hbCByZWNlaXZlZCcsJ1swMDowMDowMl0gc291cmNlOiB1bmtub3duJywnWzAwOjAwOjAzXSBjaGVja2luZyByb29tLi4uJywnWzAwOjAwOjA0XSBtb3ZlbWVudCBkZXRlY3RlZCcsJ1swMDowMDowNV0gd2FpdC4uLicsJ1swMDowMDowNl0ganVzdCBhIHByYW5rLiBicmVhdGhlLiddO2NvbnN0IG91dD1kb2N1bWVudC5nZXRFbGVtZW50QnlJZCgndHlwZWQnKTtsZXQgaT0wO2lmKG91dCl7bGV0IHQ9c2V0SW50ZXJ2YWwoKCk9PntvdXQudGV4dENvbnRlbnQrPWxpbmVzW2krK10rJ1xcbic7aWYoaT49bGluZXMubGVuZ3RoKWNsZWFySW50ZXJ2YWwodCl9LDY1MCl9bGV0IG49OTtsZXQgYz1kb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc2Vjb25kcycpO2xldCB0PXNldEludGVydmFsKCgpPT57Yy50ZXh0Q29udGVudD0tLW47aWYobjw9MCl7Y2xlYXJJbnRlcnZhbCh0KTtsb2NhdGlvbi5ocmVmPScvZGFzaGJvYXJkJ319LDEwMDApPC9zY3JpcHQ+PC9ib2R5PjwvaHRtbD4=").decode("utf-8")
     return render_template_string(html, kind=kind)
 
 @app.post("/admin/fullscreen-image")
@@ -485,7 +503,7 @@ def _rdap(url):
 
 def _domain_report(raw):
     domain = _valid_domain(raw)
-    result = ["DOMAIN INTELLIGENCE — " + domain, "", "DNS / RESOLUTION"]
+    result = ["DOMAIN INTELLIGENCE â " + domain, "", "DNS / RESOLUTION"]
     for kind in ("A", "AAAA"):
         try:
             vals = _doh(domain, kind)
@@ -515,7 +533,7 @@ def _domain_report(raw):
 def _ip_report(raw):
     try: addr=ipaddress.ip_address(raw.strip())
     except ValueError: raise ValueError("Enter a valid IPv4 or IPv6 address.")
-    out=["IP INTELLIGENCE — "+str(addr),"Version: IPv"+str(addr.version),
+    out=["IP INTELLIGENCE â "+str(addr),"Version: IPv"+str(addr.version),
          "Global/public: "+str(addr.is_global),"Private: "+str(addr.is_private),
          "Reserved: "+str(addr.is_reserved),"Loopback: "+str(addr.is_loopback)]
     if not addr.is_global:
@@ -526,7 +544,7 @@ def _ip_report(raw):
         out += ["","IP REGISTRATION (RDAP)","Network name: "+str(rd.get("name") or "Not supplied"),
                 "Handle: "+str(rd.get("handle") or "Not supplied"),
                 "Country: "+str(rd.get("country") or "Not supplied"),
-                "Range: "+str(rd.get("startAddress","?"))+" – "+str(rd.get("endAddress","?"))]
+                "Range: "+str(rd.get("startAddress","?"))+" â "+str(rd.get("endAddress","?"))]
     except Exception as exc: out += ["RDAP: "+str(exc)]
     try:
         info=_get_json("https://ipinfo.io/"+str(addr)+"/json")
@@ -552,7 +570,7 @@ def _url_report(raw):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
     opener=urllib.request.build_opener(_NoRedirect,urllib.request.HTTPHandler(),urllib.request.HTTPSHandler())
-    out=["WEBSITE INTELLIGENCE — "+host,"Resolved public IPs: "+", ".join(ips),"Requested URL: "+u.scheme+"://"+host+path]
+    out=["WEBSITE INTELLIGENCE â "+host,"Resolved public IPs: "+", ".join(ips),"Requested URL: "+u.scheme+"://"+host+path]
     try:
         with opener.open(req,timeout=8) as res:
             body=res.read(120000).decode("utf-8","replace")
@@ -577,7 +595,7 @@ def _url_report(raw):
 
 def _dns_report(raw):
     domain = _valid_domain(raw)
-    out = ["DNS RECORDS — " + domain]
+    out = ["DNS RECORDS â " + domain]
     for kind in ("A", "AAAA", "MX", "NS", "TXT", "CAA", "SOA"):
         try:
             vals = _doh(domain, kind)
@@ -600,10 +618,10 @@ def _email_report(raw):
                 or not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+", local)):
             raise ValueError("The email address format is invalid.")
         domain = _valid_domain(domain_raw)
-        out = ["EMAIL DOMAIN INTELLIGENCE — " + domain, "Address syntax: valid format", "Mailbox existence: not tested (cannot be reliably confirmed through public DNS)."]
+        out = ["EMAIL DOMAIN INTELLIGENCE â " + domain, "Address syntax: valid format", "Mailbox existence: not tested (cannot be reliably confirmed through public DNS)."]
     else:
         domain = _valid_domain(value)
-        out = ["EMAIL DOMAIN INTELLIGENCE — " + domain, "Domain input: valid"]
+        out = ["EMAIL DOMAIN INTELLIGENCE â " + domain, "Domain input: valid"]
     try:
         mx = _doh(domain, "MX")
         out.append("MX records: " + (" | ".join(mx[:12]) if mx else "No MX records found"))
